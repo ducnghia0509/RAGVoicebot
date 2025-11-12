@@ -1,0 +1,10 @@
+__pycache__/
+logs/
+venv/
+__init__.py
+.env
+embedded_chunks.json
+embedded_chunks.pkl
+gradioBotSimple.py
+gradioBot.py
+gradioBotSimple.py
