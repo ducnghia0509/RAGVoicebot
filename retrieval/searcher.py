@@ -8,7 +8,7 @@ import time
 
 embedder, qdrant_client, _ = get_models()
 
-def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set) -> list[dict]:
+def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set, force_no_filter: bool = False) -> list[dict]:
     t0 = time.time()
     query_vec = embedder.encode(query, normalize_embeddings=True).tolist()
     timing_logger.info(f"Embedding time: {time.time() - t0:.4f}s")
@@ -16,6 +16,10 @@ def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set) -> list[dict]
     meta_filters, general_keywords = extract_metadata_from_query(query)
     timing_logger.info(f"Extracted filters: {meta_filters}")
 
+    if force_no_filter:
+        meta_filters = {}
+        general_keywords = []  # optional
+        timing_logger.info("force_no_filter=True → bỏ toàn bộ metadata filter")
     must = []
     should = []
     must_not = [

@@ -1,0 +1,390 @@
+<!-- <!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simple RAG Voicebot UI</title>
+    <style>
+      body{font-family: Arial, Helvetica, sans-serif; padding:20px}
+      textarea{width:100%;height:120px}
+      button{padding:10px 16px;margin-top:8px}
+      #log{background:#111;color:#bfbfbf;padding:10px;height:200px;overflow:auto;font-size:12px}
+    </style>
+  </head>
+  <body>
+    <h2>Simple RAG Voicebot</h2>
+    <p>Nhập câu hỏi, nhấn <b>Ask</b></p>
+    <textarea id="question" placeholder="Ví dụ: Ly hôn đơn phương cần giấy tờ gì?"></textarea>
+    <div>
+      <button id="askBtn">Ask</button>
+    </div>
+
+    <h3>Response</h3>
+    <div id="respText"></div>
+    <div id="player"></div>
+
+    <h3>Debug log</h3>
+    <div id="log"></div>
+
+    <script>
+      const log = (m)=>{
+        const el = document.getElementById('log');
+        const t = new Date().toLocaleTimeString();
+        el.innerText = `[${t}] ` + m + "\n" + el.innerText;
+        console.debug(m);
+      };
+
+      async function callApi(path, question){
+        log(`Calling ${path} with question="${question.slice(0,80)}"`);
+        try{
+          const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question})});
+          const j = await r.json();
+          log(`Response: ${JSON.stringify(j).slice(0,300)}`);
+          return j;
+        }catch(e){
+          log('Request failed: '+e);
+          throw e;
+        }
+      }
+
+      async function getStatus(id){
+        try{
+          const r = await fetch('/status/' + id);
+          if(r.status !== 200) return null;
+          const j = await r.json();
+          return j;
+        }catch(e){
+          log('Status poll failed: '+e);
+          return null;
+        }
+      }
+
+      // Queue-based player: ensures sequential playback of multiple URLs
+      const playQueueArr = [];
+      let playing = false;
+
+      function enqueueAudio(url){
+        if(!url) return;
+        if(playQueueArr.indexOf(url) === -1) playQueueArr.push(url);
+        _tryPlayNext();
+      }
+
+      async function _tryPlayNext(){
+        if(playing) return;
+        if(playQueueArr.length === 0) return;
+        const url = playQueueArr.shift();
+        playing = true;
+        log('Playing: ' + url);
+        const player = document.getElementById('player');
+        player.innerHTML = '';
+        const audio = document.createElement('audio');
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        player.appendChild(audio);
+
+        const cleanup = async () => {
+          try{
+            const fname = url.split('/').pop();
+            // report end
+            try{ await fetch('/report_play', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({task_id: taskId, url: url, event: 'end', ts: Date.now()})}); }catch(e){/*ignore*/}
+            await fetch('/audio/'+fname, {method:'DELETE'});
+            log('Deleted server audio file: '+fname);
+          }catch(e){ log('Failed to delete audio: '+e); }
+          player.innerHTML = '';
+          playing = false;
+          // play next if any
+          setTimeout(_tryPlayNext, 50);
+        };
+
+        audio.addEventListener('play', ()=>{
+          // report start
+          try{ fetch('/report_play', {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({task_id: taskId, url: url, event: 'start', ts: Date.now()})}); }catch(e){/*ignore*/}
+        });
+
+        audio.addEventListener('ended', cleanup);
+        audio.addEventListener('error', ()=>{ log('Audio error for '+url); cleanup(); });
+      }
+
+      document.getElementById('askBtn').addEventListener('click', async ()=>{
+        const q = document.getElementById('question').value;
+        if(!q) return alert('Nhập câu hỏi');
+        const res = await callApi('/ask', q);
+        const taskId = res.id;
+        document.getElementById('respText').innerText = res.text || '(no text)';
+
+        // poll status every 1s until full_ready
+        let lastQuickUrl = null;
+        let knownFullUrls = new Set();
+        const poll = setInterval(async ()=>{
+          const s = await getStatus(taskId);
+          if(!s){ log('No status yet for '+taskId); return; }
+          // quick audio available?
+          if(s.quick_audio_url && s.quick_audio_url !== lastQuickUrl){
+            lastQuickUrl = s.quick_audio_url;
+            log('Quick audio ready: '+lastQuickUrl);
+            enqueueAudio(lastQuickUrl);
+          }
+          // full text
+          if(s.full_text){
+            document.getElementById('respText').innerText = s.full_text;
+          }
+            // prefer merged full audio if available
+            if(s.full_merged_url){
+              if(!knownFullUrls.has(s.full_merged_url)){
+                knownFullUrls.add(s.full_merged_url);
+                log('Enqueue merged full audio: '+s.full_merged_url);
+                enqueueAudio(s.full_merged_url);
+              }
+            } else if(s.full_audio_urls && s.full_audio_urls.length){
+              for(const u of s.full_audio_urls){
+                if(!knownFullUrls.has(u)){
+                  knownFullUrls.add(u);
+                  log('Enqueue full audio: '+u);
+                  enqueueAudio(u);
+                }
+              }
+            }
+          if(s.status === 'full_ready' || s.status === 'failed'){
+            log('Task '+taskId+' finished with status='+s.status);
+            clearInterval(poll);
+          }
+        }, 1000);
+      });
+
+      // Removed separate Ask (Full) button. Use single Ask button which triggers quick+full in background.
+    </script>
+  </body>
+</html> -->
+
+
+<!doctype html>
+<html lang="vi">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Simple RAG Voicebot UI - Fixed</title>
+    <style>
+      body{font-family: Arial, Helvetica, sans-serif; padding:20px}
+      textarea{width:100%;height:120px}
+      button{padding:10px 16px;margin-top:8px}
+      #log{background:#111;color:#bfbfbf;padding:10px;height:200px;overflow:auto;font-size:12px}
+    </style>
+  </head>
+  <body>
+    <h2>Simple RAG Voicebot (Fixed)</h2>
+    <p>Nhập câu hỏi, nhấn <b>Ask</b></p>
+    <textarea id="question" placeholder="Ví dụ: Ly hôn đơn phương cần giấy tờ gì?"></textarea>
+    <div>
+      <button id="askBtn">Ask</button>
+    </div>
+
+    <h3>Response</h3>
+    <div id="respText"></div>
+    <div id="player"></div>
+
+    <h3>Debug log</h3>
+    <div id="log"></div>
+
+    <script>
+      const log = (m)=>{
+        const el = document.getElementById('log');
+        const t = new Date().toLocaleTimeString();
+        el.innerText = `[${t}] ` + m + "\n" + el.innerText;
+        console.debug(m);
+      };
+
+      async function callApi(path, question){
+        log(`Calling ${path} with question="${question.slice(0,80)}"`);
+        try{
+          const r = await fetch(path, {method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({question})});
+          const j = await r.json();
+          log(`Response: ${JSON.stringify(j).slice(0,300)}`);
+          return j;
+        }catch(e){
+          log('Request failed: '+e);
+          throw e;
+        }
+      }
+
+      async function getStatus(id){
+        try{
+          const r = await fetch('/status/' + id);
+          if(r.status !== 200) return null;
+          const j = await r.json();
+          return j;
+        }catch(e){
+          log('Status poll failed: '+e);
+          return null;
+        }
+      }
+
+      // Queue-based player: ensures sequential playback of multiple URLs
+      const playQueueArr = [];
+      let playing = false;
+      let currentTaskId = null; // FIX: Track current task ID
+
+      function enqueueAudio(url){
+        if(!url) return;
+        if(playQueueArr.indexOf(url) === -1) {
+          playQueueArr.push(url);
+          log('Enqueued: ' + url);
+        } else {
+          log('SKIP duplicate enqueue: ' + url);
+        }
+        _tryPlayNext();
+      }
+
+      async function _tryPlayNext(){
+        if(playing) return;
+        if(playQueueArr.length === 0) return;
+        
+        const url = playQueueArr.shift();
+        playing = true;
+        log('Playing: ' + url);
+        
+        const player = document.getElementById('player');
+        player.innerHTML = '';
+        const audio = document.createElement('audio');
+        audio.src = url;
+        audio.controls = true;
+        audio.autoplay = true;
+        player.appendChild(audio);
+
+        const cleanup = async () => {
+          try{
+            const fname = url.split('/').pop();
+            // FIX: Use currentTaskId instead of undefined taskId
+            if(currentTaskId) {
+              try{ 
+                await fetch('/report_play', {
+                  method:'POST', 
+                  headers:{'Content-Type':'application/json'}, 
+                  body:JSON.stringify({
+                    task_id: currentTaskId, 
+                    url: url, 
+                    event: 'end', 
+                    ts: Date.now()
+                  })
+                }); 
+              }catch(e){
+                log('Failed to report play end: '+e);
+              }
+            }
+            
+            await fetch('/audio/'+fname, {method:'DELETE'});
+            log('Deleted server audio file: '+fname);
+          }catch(e){ 
+            log('Failed to delete audio: '+e); 
+          }
+          
+          player.innerHTML = '';
+          playing = false;
+          // play next if any
+          setTimeout(_tryPlayNext, 50);
+        };
+
+        audio.addEventListener('play', ()=>{
+          // FIX: Use currentTaskId
+          if(currentTaskId) {
+            try{ 
+              fetch('/report_play', {
+                method:'POST', 
+                headers:{'Content-Type':'application/json'}, 
+                body:JSON.stringify({
+                  task_id: currentTaskId, 
+                  url: url, 
+                  event: 'start', 
+                  ts: Date.now()
+                })
+              }); 
+            }catch(e){
+              log('Failed to report play start: '+e);
+            }
+          }
+        });
+
+        audio.addEventListener('ended', cleanup);
+        audio.addEventListener('error', ()=>{ 
+          log('Audio error for '+url); 
+          cleanup(); 
+        });
+      }
+
+      document.getElementById('askBtn').addEventListener('click', async ()=>{
+        const q = document.getElementById('question').value;
+        if(!q) return alert('Nhập câu hỏi');
+        
+        // Clear previous queue and reset state
+        playQueueArr.length = 0;
+        playing = false;
+        document.getElementById('player').innerHTML = '';
+        
+        const res = await callApi('/ask', q);
+        const taskId = res.id;
+        currentTaskId = taskId; // FIX: Set current task ID
+        
+        document.getElementById('respText').innerText = res.text || '(no text)';
+
+        // Track which URLs we've already enqueued to prevent duplicates
+        let lastQuickUrl = null;
+        let knownFullUrls = new Set();
+        let pollCount = 0;
+        
+        const poll = setInterval(async ()=>{
+          pollCount++;
+          const s = await getStatus(taskId);
+          
+          if(!s){ 
+            log('No status yet for '+taskId); 
+            return; 
+          }
+          
+          // FIX: Only enqueue quick audio if NOT already played
+          if(s.quick_audio_url && s.quick_audio_url !== lastQuickUrl){
+            lastQuickUrl = s.quick_audio_url;
+            log('Quick audio ready: '+lastQuickUrl);
+            enqueueAudio(lastQuickUrl);
+          }
+          
+          // Update full text
+          if(s.full_text){
+            const el = document.getElementById('respText');
+            el.innerText += "\n" + s.full_text; // thêm mới xuống dòng
+          }
+          
+          // FIX: Ưu tiên merged audio nếu có, BỎ QUA individual parts
+          if(s.full_merged_url){
+            if(!knownFullUrls.has(s.full_merged_url)){
+              knownFullUrls.add(s.full_merged_url);
+              log('Using merged full audio: '+s.full_merged_url);
+              
+              // CLEAR individual parts nếu đã enqueue trước đó
+              // (Trường hợp server tạo merged sau khi đã gửi individual parts)
+              if(s.full_audio_urls && s.full_audio_urls.length > 0){
+                log('WARNING: Merged audio available but individual parts exist. Using merged only.');
+              }
+              
+              enqueueAudio(s.full_merged_url);
+            }
+          } else if(s.full_audio_urls && s.full_audio_urls.length){
+            // CHỈ enqueue individual parts nếu CHƯA có merged
+            for(const u of s.full_audio_urls){
+              if(!knownFullUrls.has(u)){
+                knownFullUrls.add(u);
+                log('Enqueue full audio part: '+u);
+                enqueueAudio(u);
+              }
+            }
+          }
+          
+          // Stop polling when done
+          if(s.status === 'full_ready' || s.status === 'failed'){
+            log(`Task ${taskId} finished with status=${s.status} after ${pollCount} polls`);
+            clearInterval(poll);
+          }
+        }, 1000);
+      });
+    </script>
+  </body>
+</html>

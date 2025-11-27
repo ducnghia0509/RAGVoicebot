@@ -1,6 +1,7 @@
 TOP_K=5 # cho bản basic
 GGUF_MODEL_PATH = r"C:\Users\DELL\Desktop\Test\LocalProjectPackage\Project\VoiceBotBasic\Gemma-2-IT-Q6_K.gguf"
-HF_MODEL = "meta-llama/Llama-3.1-8B-Instruct"
+HF_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
+QUICK_MODEL = "meta-llama/Llama-3.1-8B-Instruct" 
 TOP_K_FINAL = 5
 TOP_K_VECTOR = 3
 MAX_TOKENS = 512

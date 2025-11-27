@@ -8,3 +8,10 @@ embedded_chunks.pkl
 gradioBotSimple.py
 gradioBot.py
 gradioBotSimple.py
+tmp_audio/
+audio_state.json
+run.sh
+testTTS.py
+testQuickLLM.py
+llmSpace.py
+main.py
