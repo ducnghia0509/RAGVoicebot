@@ -20,6 +20,7 @@ from retrieval.searcher import retrieve_from_qdrant
 from prompt.builder import build_context_and_prompt
 from typing import Optional 
 from config import *
+from utils.csv_logger import get_csv_logger
 
 
 # --- Logging setup ---
@@ -182,6 +183,16 @@ def _write_audio_buffer_to_file(buffer, prefix="audio"):
 def _background_process_all(task_id: str, question: str,audio_data: Optional[bytes] = None):
     
     logger.debug(f"[BG] Start background process for id={task_id}")
+    
+    # Timing tracking
+    time_receive = _now()
+    time_first_token = None
+    time_embed_ms = None
+    time_retrieval_ms = None
+    time_llm_start = None
+    context_num = 0
+    final_answer = ""
+    
     if audio_data:
         try:
             asr_client = get_asr_client()
@@ -206,6 +217,8 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
                 if buf:
                     fname, path = _write_audio_buffer_to_file(buf, prefix=f"quick_{task_id}")
                     quick_url = f"/audio/{fname}"
+                    if time_first_token is None:
+                        time_first_token = _now()
                     _safe_update_task(task_id, quick_audio_url=quick_url, quick_audio_ready_at=_now())
                     logger.debug(f"[BG] quick audio ready for id={task_id} -> {fname}")
                     trace_event(task_id, 'audio_created', {'type': 'quick', 'file': fname, 'url': quick_url})
@@ -217,11 +230,15 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
         _safe_update_task(task_id, status='full_processing', full_started_at=_now())
         logger.debug(f"[BG] Retrieval for id={task_id}")
         try:
-            chunks = retrieve_from_qdrant(question, top_k=TOP_K_VECTOR*3, exclude_ids=set(), force_no_filter=False)
-            logger.debug(f"[BG] Retrieved {len(chunks) if chunks else 0} chunks for id={task_id}")
+            chunks, timing_info = retrieve_from_qdrant(question, top_k=TOP_K_VECTOR*3, exclude_ids=set(), force_no_filter=False)
+            time_embed_ms = timing_info.get('embed_time_ms')
+            time_retrieval_ms = timing_info.get('retrieval_time_ms')
+            context_num = len(chunks) if chunks else 0
+            logger.debug(f"[BG] Retrieved {context_num} chunks for id={task_id}")
         except Exception:
             logger.exception(f"[BG] Retrieval failed for id={task_id}")
             chunks = []
+            context_num = 0
 
         try:
             context, messages = build_context_and_prompt(chunks, question)
@@ -235,6 +252,7 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
         audio_urls = []
         try:
             logger.debug(f"[BG] Attempting streaming LLM for id={task_id}")
+            time_llm_start = _now()
             stream = hf_client.chat_completion(messages, max_tokens=512, temperature=0.7, top_p=0.95, stream=True)
             trace_event(task_id, 'llm_request', {'messages_count': len(messages)})
             
@@ -248,6 +266,9 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
                     continue
                     
                 delta = msg.choices[0].delta.content
+                # Track first token from LLM
+                if time_first_token is None and delta:
+                    time_first_token = _now()
                 trace_event(task_id, 'llm_delta', {'delta_preview': (delta or '')})
                 final_text += delta
                 pending += delta
@@ -359,8 +380,33 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
                     logger.exception(f"[BG] TTS sentence {idx} failed for id={task_id}")
 
         # mark finished
+        final_answer = final_text
+        time_total = _now() - time_receive
+        time_llm_stream_ms = (_now() - time_llm_start) if time_llm_start else None
         _safe_update_task(task_id, status='full_ready', full_audio_urls=audio_urls, full_finished_at=_now())
         logger.debug(f"[BG] Full processing finished for id={task_id} with {len(audio_urls)} parts")
+        
+        # Log to CSV
+        try:
+            csv_logger = get_csv_logger()
+            time_receive_to_first = (time_first_token - time_receive) if time_first_token else None
+            csv_logger.log_task(
+                task_id=task_id,
+                question=question,
+                answer=final_answer,
+                context_num=context_num,
+                time_receive_to_first_token_ms=time_receive_to_first,
+                time_embedding_ms=time_embed_ms,
+                time_retrieval_ms=time_retrieval_ms,
+                time_llm_stream_ms=time_llm_stream_ms,
+                time_total_ms=time_total,
+                quick_audio_generated=bool(tasks.get(task_id, {}).get('quick_audio_url')),
+                full_audio_parts=len(audio_urls),
+                status='completed'
+            )
+            logger.debug(f"[BG] Logged metrics to CSV for task {task_id}")
+        except Exception:
+            logger.exception(f"[BG] Failed to log CSV for task {task_id}")
 
         # Create merged audio file for smoother playback (reduce network/seek gaps) -> xóa do có thể gây conflict
         # try:
@@ -538,18 +584,28 @@ def ask_full(req: AskRequest):
     if not q:
         raise HTTPException(status_code=400, detail="Empty question")
 
+    # Timing
+    time_start = _now()
+    time_embed_ms = None
+    time_retrieval_ms = None
+    context_num = 0
+
     # Retrieval
     try:
-        chunks = retrieve_from_qdrant(
+        chunks, timing_info = retrieve_from_qdrant(
             q,
             top_k=TOP_K_VECTOR * 3,
             exclude_ids=set(),
             force_no_filter=False
         )
-        logger.debug(f"retrieve_from_qdrant returned {len(chunks) if chunks else 0} chunks")
+        time_embed_ms = timing_info.get('embed_time_ms')
+        time_retrieval_ms = timing_info.get('retrieval_time_ms')
+        context_num = len(chunks) if chunks else 0
+        logger.debug(f"retrieve_from_qdrant returned {context_num} chunks")
     except Exception:
         logger.exception("Retrieval failed")
         chunks = []
+        context_num = 0
 
     # Build context & messages
     try:

@@ -34,7 +34,15 @@ def retrieve_from_qdrant(
     top_k: int,
     exclude_ids: set,
     force_no_filter: bool = False
-) -> list[dict]:
+) -> tuple[list[dict], dict]:
+    """
+    Retrieve from Qdrant with timing info
+    
+    Returns:
+        tuple: (chunks, timing_info) where timing_info contains:
+            - embed_time_ms: embedding time in milliseconds
+            - retrieval_time_ms: qdrant query time in milliseconds
+    """
 
     # ---------- EMBEDDING ----------
     t0 = time.time()
@@ -64,32 +72,36 @@ def retrieve_from_qdrant(
     ]
 
     # ---------- FILTER BUILD ----------
+    # Chuyển sang SHOULD (OR logic) để linh hoạt hơn, tránh filter quá strict
     for key, val in meta_filters.items():
         if key == "document_number":
-            must.append(models.FieldCondition(
+            should.append(models.FieldCondition(
                 key="document_number",
                 match=models.MatchText(text=val)
             ))
         elif key == "doc_type":
-            must.append(models.FieldCondition(
+            should.append(models.FieldCondition(
                 key="doc_type",
                 match=models.MatchValue(value=val)
             ))
         elif key == "year":
-            must.append(models.FieldCondition(
+            should.append(models.FieldCondition(
                 key="year",
                 match=models.MatchValue(value=val)
             ))
         elif key == "issuer":
-            must.append(models.FieldCondition(
+            should.append(models.FieldCondition(
                 key="issuer",
                 match=models.MatchText(text=val)
             ))
         elif key == "title_contains":
-            must.append(models.FieldCondition(
+            should.append(models.FieldCondition(
                 key="title",
                 match=models.MatchText(text=val)
             ))
+    
+    # Log filters để debug
+    timing_logger.info(f"Filter build: must={len(must)}, should={len(should)}, must_not={len(must_not)}")
 
     search_filter = models.Filter(
         must=must or None,
@@ -98,6 +110,7 @@ def retrieve_from_qdrant(
     )
 
     # ---------- QUERY QDRANT ----------
+    t_retrieval_start = time.time()
     results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vec,
@@ -105,6 +118,12 @@ def retrieve_from_qdrant(
         limit=top_k * 3,
         with_payload=True
     ).points
+    retrieval_time = time.time() - t_retrieval_start
+    
+    # Log kết quả retrieval
+    timing_logger.info(f"Qdrant returned {len(results)} chunks in {retrieval_time:.4f}s")
+    if len(results) == 0:
+        timing_logger.warning(f"NO RESULTS! query='{query}', filters={meta_filters}, exclude_ids={len(exclude_ids)}")
 
     # ---------- SOFT HYBRID ----------
     boosted = []
@@ -145,4 +164,32 @@ def retrieve_from_qdrant(
         })
 
     boosted.sort(key=lambda x: x["final_score"], reverse=True)
-    return boosted[:top_k]
+    
+    # Prepare timing info
+    timing_info = {
+        'embed_time_ms': embed_time * 1000,
+        'retrieval_time_ms': retrieval_time * 1000
+    }
+    
+    return boosted[:top_k], timing_info
+
+
+# ===================== DEBUG TEST =====================
+if __name__ == "__main__":
+    print("=== TEST SEARCHER ===")
+    test_queries = [
+        "Thông tư 38/2021",
+        "Luật 50/2014/QH13",
+        "quy định về an toàn giao thông",
+    ]
+    
+    for query in test_queries:
+        print(f"\n🔍 Query: '{query}'")
+        chunks, timing = retrieve_from_qdrant(query, top_k=5, exclude_ids=set())
+        print(f"⏱️  Embed: {timing['embed_time_ms']:.0f}ms | Retrieval: {timing['retrieval_time_ms']:.0f}ms")
+        print(f"📦 Found {len(chunks)} chunks:")
+        for i, chunk in enumerate(chunks, 1):
+            meta = chunk['metadata']
+            print(f"  {i}. [{chunk['final_score']:.3f}] {meta.get('document_number')} | {meta.get('title', '')[:60]}...")
+    
+    print("\n✅ Test completed!")

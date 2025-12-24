@@ -54,15 +54,40 @@ points = []
 print("Đang insert...")
 for idx, chunk in enumerate(tqdm(all_chunks, desc="Insert")):
     meta = chunk.get("metadata", {})
+    
+    # Extract year từ issue_date (nếu có)
+    year_value = None
+    issue_date = meta.get("issued_date", "")
+    if issue_date:
+        # Tìm năm 4 chữ số trong issue_date
+        import re
+        year_match = re.search(r'(20\d{2}|19\d{2})', str(issue_date))
+        if year_match:
+            try:
+                year_value = int(year_match.group(1))
+            except:
+                pass
+    
+    # Extract year từ document_number (fallback) - ví dụ: 38/2021/TT-BGTVT
+    if not year_value:
+        doc_num = meta.get("document_number", "")
+        year_match = re.search(r'/(20\d{2})/', str(doc_num))
+        if year_match:
+            try:
+                year_value = int(year_match.group(1))
+            except:
+                pass
+    
     payload = {
         "text": chunk["text"],
         "chunk_id": meta.get("chunk_id"),
         "source_file": meta.get("source_file", "unknown"),
         "document_number": meta.get("document_number", ""),
-        "doc_type": meta.get("document_type", "Không rõ"),
-        "issuer": meta.get("authority", "Không rõ"),
-        "issue_date": meta.get("issued_date", ""),
+        "doc_type": meta.get("document_type", "Không rõ"),  # Từ document_type
+        "issuer": meta.get("authority", "Không rõ"),        # Từ authority
+        "issue_date": issue_date,
         "title": meta.get("title", ""),
+        "year": year_value,  # ✅ Thêm field year
     }
     points.append(PointStruct(id=idx, vector=chunk["embedding"], payload=payload))
     if len(points) >= batch_size:
@@ -75,16 +100,39 @@ print(f"Insert xong {len(all_chunks)} points.")
 
 # ===================== TẠO INDEX =====================
 print("\nTạo index cho hybrid search...")
-for field in ["document_number", "title", "text"]:
+# Index cho text fields (hỗ trợ MatchText)
+for field in ["document_number", "title", "text", "issuer"]:
     try:
         client.create_payload_index(
             collection_name=COLLECTION_NAME,
             field_name=field,
             field_schema=models.PayloadSchemaType.TEXT
         )
-        print(f"Index: {field}")
-    except:
-        pass
+        print(f"Index TEXT: {field}")
+    except Exception as e:
+        print(f"Index {field} failed: {e}")
+
+# Index cho keyword fields
+try:
+    client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="doc_type",
+        field_schema=models.PayloadSchemaType.KEYWORD
+    )
+    print(f"Index KEYWORD: doc_type")
+except Exception as e:
+    print(f"Index doc_type failed: {e}")
+
+# Index cho integer field (year)
+try:
+    client.create_payload_index(
+        collection_name=COLLECTION_NAME,
+        field_name="year",
+        field_schema=models.PayloadSchemaType.INTEGER
+    )
+    print(f"Index INTEGER: year")
+except Exception as e:
+    print(f"Index year failed: {e}")
 
 # ===================== TEST HYBRID =====================
 print("\n--- HYBRID SEARCH TEST ---")

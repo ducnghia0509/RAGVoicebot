@@ -22,10 +22,8 @@ def get_remote_embedding(query: str, max_retries: int = 3, timeout: int = 15) ->
     Get embedding from remote service with retry logic and fallback
     """
     API_URL = "https://hoangnam5904-embedding.hf.space/embed"
-    payload = {
-        "inputs": query,
-        "parameters": {"truncation": "true"}
-    }
+    # Thử format đơn giản hơn: chỉ gửi text string
+    payload = {"text": query}
     
     for attempt in range(max_retries):
         try:
@@ -36,6 +34,10 @@ def get_remote_embedding(query: str, max_retries: int = 3, timeout: int = 15) ->
                 timeout=timeout,
                 headers={"User-Agent": "RAGVoicebot/1.0"}
             )
+            
+            # Log để debug
+            if resp.status_code != 200:
+                logger.error(f"Embedding API error {resp.status_code}: {resp.text[:200]}")
             
             if resp.status_code == 200:
                 result = resp.json()
