@@ -56,9 +56,19 @@ class ASRClient:
             i += step_samples
         
         remaining = len(data) - i
-        if 0 < remaining < chunk_samples:
-            last_chunk = data[-chunk_samples:]
-            chunks.append(last_chunk)
+        if remaining > 0:
+            # Nếu còn lại >= 1s thì xử lý riêng
+            if remaining >= sr:  # >= 1 second
+                # Lấy phần còn lại chính xác thay vì overlap
+                last_chunk = data[i:]
+                chunks.append(last_chunk)
+            else:
+                # Nếu < 1s thì overlap với chunk trước (tránh mất âm cuối câu)
+                if len(chunks) > 0:
+                    # Extend chunk cuối cùng thay vì tạo chunk mới
+                    last_idx = len(chunks) - 1
+                    overlap_start = max(0, len(data) - chunk_samples)
+                    chunks[last_idx] = data[overlap_start:]
         
         return chunks
     
