@@ -28,3 +28,9 @@ VECTOR_SCORE_MULTIPLIER = 1.0
 ENABLE_SOFT_HYBRID = True
 
 SUBMIT_RETRIEVAL_BOOST = 0.15
+
+# Thêm cấu hình ASR
+ASR_API_URL = "https://Hoangnam5904-STT.hf.space/transcribe_file"
+ASR_CHUNK_DURATION = 5.0
+ASR_OVERLAP = 0.25
+ASR_LANGUAGE = "vi"

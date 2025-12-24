@@ -4,18 +4,34 @@ import uuid
 import logging
 from pydub import AudioSegment, silence
 # Explicit ffmpeg binary (Windows) provided by user
-FFMPEG_PATH = r"C:\Users\DELL\Downloads\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe"
-os.environ.setdefault("FFMPEG_BINARY", FFMPEG_PATH)
+# --- FFMPEG SETUP FIXED ---
+FFMPEG_DIR = "./ffmpeg-7.1.1-essentials_build/bin"
+FFMPEG_PATH = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
+FFPROBE_PATH = os.path.join(FFMPEG_DIR, "ffprobe.exe")
+
+# Kiểm tra file tồn tại
+if not os.path.exists(FFMPEG_PATH):
+    logger = logging.getLogger("simple_server")
+    logger.error(f"FFMPEG not found at: {FFMPEG_PATH}")
+    raise FileNotFoundError(f"FFMPEG not found at: {FFMPEG_PATH}")
+
+if not os.path.exists(FFPROBE_PATH):
+    logger = logging.getLogger("simple_server")
+    logger.warning(f"FFPROBE not found at: {FFPROBE_PATH}")
+
+# Thiết lập đường dẫn cho pydub
+os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
+os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
+
 try:
     AudioSegment.converter = FFMPEG_PATH
-except Exception:
-    pass
-if os.path.exists(FFMPEG_PATH):
+    AudioSegment.ffprobe = FFPROBE_PATH
     logger = logging.getLogger("simple_server")
-    logger.info(f"Using ffmpeg binary: {FFMPEG_PATH}")
-else:
+    logger.info(f"Using ffmpeg: {FFMPEG_PATH}")
+    logger.info(f"Using ffprobe: {FFPROBE_PATH}")
+except Exception as e:
     logger = logging.getLogger("simple_server")
-    logger.warning(f"FFMPEG binary not found at {FFMPEG_PATH}. pydub may fail to process audio.")
+    logger.error(f"Failed to set ffmpeg paths: {e}")
 from typing import List
 import threading
 import re
@@ -24,13 +40,15 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from fastapi import UploadFile, File, Form
 from pydantic import BaseModel
-
 from models.clients import get_models
 from services.quickLlm import get_quick_response_llm
 from services.tts import tts_client
+from services.asr import get_asr_client
 from retrieval.searcher import retrieve_from_qdrant
 from prompt.builder import build_context_and_prompt
+from typing import Optional 
 from config import *
 
 
@@ -294,8 +312,20 @@ def _merge_audio_files(file_paths: List[str], out_path: str, crossfade_ms: int =
         raise
 
 
-def _background_process_all(task_id: str, question: str):
+def _background_process_all(task_id: str, question: str,audio_data: Optional[bytes] = None):
+    
     logger.debug(f"[BG] Start background process for id={task_id}")
+    if audio_data:
+        try:
+            asr_client = get_asr_client()
+            transcription = asr_client.transcribe_bytes(audio_data, 16000, stream=False)
+            
+            if transcription.get('success'):
+                question = transcription.get('text', question)
+                _safe_update_task(task_id, original_audio=True, transcribed_text=question)
+                trace_event(task_id, 'asr_complete', {'transcribed_text': question})
+        except Exception as e:
+            logger.exception(f"ASR failed for task {task_id}")
     try:
         _safe_update_task(task_id, bg_started_at=_now())
         # 1. quick audio (if quick_text exists)
@@ -486,6 +516,82 @@ def _background_process_all(task_id: str, question: str):
         logger.exception(f"[BG] Unexpected error in background for id={task_id}")
         _safe_update_task(task_id, status='failed')
 
+@app.post("/transcribe_base64")
+def transcribe_base64(payload: dict):
+    """
+    Transcribe audio from base64 encoded string
+    """
+    try:
+        audio_base64 = payload.get("audio_data")
+        sample_rate = payload.get("sample_rate", 16000)
+        stream = payload.get("stream", False)
+        mime_type = payload.get("mime_type", None)
+        
+        if not audio_base64:
+            raise HTTPException(status_code=400, detail="No audio data provided")
+        
+        # Use new transcribe_base64 method
+        asr_client = get_asr_client()
+        result = asr_client.transcribe_base64(audio_base64, sample_rate, stream, mime_type)
+        return result
+        
+    except Exception as e:
+        logger.exception(f"Base64 transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+    
+    
+@app.post("/transcribe")
+def transcribe_audio(file: UploadFile = File(...), stream: bool = Form(False)):
+    """
+    Transcribe audio file to text
+    """
+    try:
+        logger.debug(f"Transcribing audio file: {file.filename}")
+        
+        # Save temporarily
+        temp_path = os.path.join(TMP_AUDIO_DIR, f"transcribe_{uuid.uuid4().hex[:8]}.wav")
+        with open(temp_path, "wb") as f:
+            content = file.file.read()
+            f.write(content)
+        
+        # Transcribe
+        asr_client = get_asr_client()
+        result = asr_client.transcribe_file(temp_path, stream=stream)
+        
+        # Cleanup
+        try:
+            os.remove(temp_path)
+        except:
+            pass
+        
+        return result
+        
+    except Exception as e:
+        logger.exception(f"Transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/transcribe_bytes")
+def transcribe_bytes(payload: dict):
+    """
+    Transcribe audio from base64 encoded bytes
+    """
+    try:
+        import base64
+        audio_b64 = payload.get("audio_data")
+        sample_rate = payload.get("sample_rate", 16000)
+        stream = payload.get("stream", False)
+        mime_type = payload.get("mime_type", None)
+        if not audio_b64:
+            raise HTTPException(status_code=400, detail="No audio data provided")
+        # Decode base64
+        audio_bytes = base64.b64decode(audio_b64)
+        # Transcribe
+        asr_client = get_asr_client()
+        result = asr_client.transcribe_bytes(audio_bytes, sample_rate, stream, mime_type)
+        return result
+    except Exception as e:
+        logger.exception(f"Bytes transcription failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/")
@@ -539,6 +645,18 @@ def ask(req: AskRequest):
     # return quick text + task id immediately
     return {"id": task_id, "text": quick_text}
 
+LOG_RETRIEVAL_FILE = "logs/retrieval.log"
+def log_retrieval(question: str, chunks, context: str):
+    try:
+        with open(LOG_RETRIEVAL_FILE, "a", encoding="utf-8") as f:
+            f.write("\n" + "=" * 80 + "\n")
+            f.write(f"QUESTION:\n{question}\n\n")
+            f.write(f"CHUNKS RETRIEVED: {len(chunks) if chunks else 0}\n\n")
+            f.write("CONTEXT RETRIEVED:\n")
+            f.write(context)
+            f.write("\n")
+    except Exception:
+        logger.exception("Failed to write retrieval log")
 
 @app.post("/ask_full")
 def ask_full(req: AskRequest):
@@ -549,7 +667,12 @@ def ask_full(req: AskRequest):
 
     # Retrieval
     try:
-        chunks = retrieve_from_qdrant(q, top_k=TOP_K_VECTOR*3, exclude_ids=set(), force_no_filter=False)
+        chunks = retrieve_from_qdrant(
+            q,
+            top_k=TOP_K_VECTOR * 3,
+            exclude_ids=set(),
+            force_no_filter=False
+        )
         logger.debug(f"retrieve_from_qdrant returned {len(chunks) if chunks else 0} chunks")
     except Exception:
         logger.exception("Retrieval failed")
@@ -559,24 +682,41 @@ def ask_full(req: AskRequest):
     try:
         context, messages = build_context_and_prompt(chunks, q)
         logger.debug(f"Built context, messages count={len(messages)}")
+
+        # 🔽 LOG QUESTION + CONTEXT RA FILE RIÊNG
+        log_retrieval(q, chunks, context)
+
     except Exception:
         logger.exception("build_context_and_prompt failed")
         messages = []
+        context = ""
 
     # LLM call (non-stream). Try hf_client first, fallback to quick
     final_text = None
     try:
         logger.debug("Calling hf_client.chat_completion (non-stream) ...")
-        resp = hf_client.chat_completion(messages, max_tokens=512, temperature=0.7, top_p=0.95, stream=False)
-        # attempt to extract content
+        resp = hf_client.chat_completion(
+            messages,
+            max_tokens=512,
+            temperature=0.7,
+            top_p=0.95,
+            stream=False
+        )
+
         if hasattr(resp, 'choices'):
-            # openai-like
-            final_text = ''.join([c.get('message', {}).get('content', '') if isinstance(c, dict) else getattr(c, 'message', {}).get('content','') for c in resp.choices])
+            final_text = ''.join([
+                c.get('message', {}).get('content', '')
+                if isinstance(c, dict)
+                else getattr(c, 'message', {}).get('content', '')
+                for c in resp.choices
+            ])
         elif isinstance(resp, dict):
             final_text = resp.get('content') or resp.get('text')
         else:
             final_text = str(resp)
+
         logger.debug(f"LLM final_text length={len(final_text) if final_text else 0}")
+
     except Exception:
         logger.exception("hf_client.chat_completion failed, falling back to quick response")
         try:

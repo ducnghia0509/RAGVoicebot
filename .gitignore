@@ -5,9 +5,11 @@ __init__.py
 .env
 embedded_chunks.json
 embedded_chunks.pkl
+embedded_heterag_merged.pkl
 gradioBotSimple.py
 gradioBot.py
-gradioBotSimple.py
+gradioBotHete.py
+insertHeteragQdrant.py
 tmp_audio/
 audio_state.json
 run.sh
@@ -15,3 +17,4 @@ testTTS.py
 testQuickLLM.py
 llmSpace.py
 main.py
+ffmpeg-7.1.1-essentials_build/
