@@ -1,8 +1,12 @@
 qdrant_client
 requests
 fastapi
-uvicorn
+uvicorn[standard]
 soundfile
 numpy
 gtts
 huggingface_hub
+python-multipart
+pydantic
+aiofiles
+python-dotenv
