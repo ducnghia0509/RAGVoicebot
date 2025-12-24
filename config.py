@@ -1,5 +1,4 @@
 TOP_K=5 # cho bản basic
-GGUF_MODEL_PATH = r"C:\Users\DELL\Desktop\Test\LocalProjectPackage\Project\VoiceBotBasic\Gemma-2-IT-Q6_K.gguf"
 HF_MODEL = "meta-llama/Llama-3.3-70B-Instruct"
 QUICK_MODEL = "meta-llama/Llama-3.1-8B-Instruct" 
 TOP_K_FINAL = 5
@@ -10,7 +9,6 @@ LOG_FILE = "processing"
 MODEL_NAME = "Alibaba-NLP/gte-multilingual-base"
 MIN_INPUT_LENGTH_TO_RETRIEVAL = 5
 # qdrant config
-# QDRANT_HOST = "localhost"
 QDRANT_HOST = "914f5b70-3424-49a0-841f-80c4a1d7dac8.europe-west3-0.gcp.cloud.qdrant.io"
 QDRANT_PORT = 6333
 COLLECTION_NAME = "vietnamese_legal_chunks"
