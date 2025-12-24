@@ -1,7 +1,8 @@
 qdrant_client
-# gtts
-# pydub  # Removed - no longer needed without ffmpeg
-# TTS
 requests
 fastapi
 uvicorn
+soundfile
+numpy
+gtts
+huggingface_hub
