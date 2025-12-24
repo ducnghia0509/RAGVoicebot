@@ -506,20 +506,20 @@ def ask(req: AskRequest):
     if quick_text:
         trace_event(task_id, 'quick_text_ready', {'quick_text': quick_text})
 
-    # spawn backgrounos.path.join('/tmp/logs' if os.environ.get("VERCEL") else 'logs', 'retrieval.log')
+    # spawn background worker to generate quick audio (if any) and full processing
+    executor.submit(_background_process_all, task_id, q)
+
+    # return quick text + task id immediately
+    return {"id": task_id, "text": quick_text}
+
+LOG_RETRIEVAL_FILE = os.path.join('/tmp/logs' if os.environ.get("VERCEL") else 'logs', 'retrieval.log')
 
 def log_retrieval(question: str, chunks, context: str):
     # Skip file logging in serverless
     if os.environ.get("VERCEL") or os.environ.get("SERVERLESS"):
         logger.debug(f"RETRIEVAL: {len(chunks) if chunks else 0} chunks for: {question[:50]}...")
         return
-        )
-
-    # return quick text + task id immediately
-    return {"id": task_id, "text": quick_text}
-
-LOG_RETRIEVAL_FILE = "logs/retrieval.log"
-def log_retrieval(question: str, chunks, context: str):
+        
     try:
         with open(LOG_RETRIEVAL_FILE, "a", encoding="utf-8") as f:
             f.write("\n" + "=" * 80 + "\n")
@@ -711,5 +711,5 @@ def report_play(payload: dict):
 
 if __name__ == "__main__":
     import uvicorn
-    logger.info("Starting simple_server via uvicorn on 0.0.0.0:8000")
-    uvicorn.run("simple_server:app", host="0.0.0.0", port=8000, log_level="info")
+    logger.info("Starting app via uvicorn on 0.0.0.0:8000")
+    uvicorn.run("app:app", host="0.0.0.0", port=8000, log_level="info")
