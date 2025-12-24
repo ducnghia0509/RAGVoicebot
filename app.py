@@ -23,26 +23,45 @@ from config import *
 
 
 # --- Logging setup ---
-LOG_FILE = "logs/simple_server.log"
-os.makedirs("logs", exist_ok=True)
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s | %(levelname)s | %(message)s",
-    handlers=[
-        logging.FileHandler(LOG_FILE, encoding="utf-8"),
-        logging.StreamHandler()
-    ]
-)
+# Use /tmp for logs in serverless environment
+if os.environ.get("VERCEL") or os.environ.get("SERVERLESS"):
+    LOG_DIR = "/tmp/logs"
+    LOG_FILE = os.path.join(LOG_DIR, "server.log")
+    os.makedirs(LOG_DIR, exist_ok=True)
+    logging.basicConfig(
+        level=logging.INFO,  # Less verbose for serverless
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[logging.StreamHandler()]  # Only console logging
+    )
+else:
+    LOG_FILE = "logs/simple_server.log"
+    os.makedirs("logs", exist_ok=True)
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format="%(asctime)s | %(levelname)s | %(message)s",
+        handlers=[
+            logging.FileHandler(LOG_FILE, encoding="utf-8"),
+            logging.StreamHandler()
+        ]
+    )
 logger = logging.getLogger("simple_server")
 
 
 # --- App & static ---
 app = FastAPI()
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-TMP_AUDIO_DIR = os.path.join(BASE_DIR, "tmp_audio")
+
+# Use /tmp for audio files in serverless
+if os.environ.get("VERCEL") or os.environ.get("SERVERLESS"):
+    TMP_AUDIO_DIR = "/tmp/audio"
+else:
+    TMP_AUDIO_DIR = os.path.join(BASE_DIR, "tmp_audio")
 os.makedirs(TMP_AUDIO_DIR, exist_ok=True)
 
-app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), name="static")
+# Only mount static files if they exist (not in serverless build)
+static_dir = os.path.join(BASE_DIR, "static")
+if os.path.exists(static_dir):
+    app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
 
 # --- Models / clients init ---
@@ -63,7 +82,7 @@ def _safe_update_task(task_id: str, **kwargs):
         tasks[task_id] = t
 
 
-TRACE_LOG = os.path.join('logs', 'trace.log')
+TRACE_LOG = os.path.join('/tmp/logs' if os.environ.get("VERCEL") else 'logs', 'trace.log')
 
 
 def trace_event(task_id: str, event: str, data: dict = None):
@@ -75,6 +94,12 @@ def trace_event(task_id: str, event: str, data: dict = None):
         'data': data or {}
     }
     line = json.dumps(rec, ensure_ascii=False)
+    
+    # Skip file logging in serverless (just log to stdout)
+    if os.environ.get("VERCEL") or os.environ.get("SERVERLESS"):
+        logger.debug(line)
+        return
+        
     try:
         with open(TRACE_LOG, 'a', encoding='utf-8') as f:
             f.write(line + '\n')
@@ -481,8 +506,14 @@ def ask(req: AskRequest):
     if quick_text:
         trace_event(task_id, 'quick_text_ready', {'quick_text': quick_text})
 
-    # spawn background worker to generate quick audio (if any) and full processing
-    executor.submit(_background_process_all, task_id, q)
+    # spawn backgrounos.path.join('/tmp/logs' if os.environ.get("VERCEL") else 'logs', 'retrieval.log')
+
+def log_retrieval(question: str, chunks, context: str):
+    # Skip file logging in serverless
+    if os.environ.get("VERCEL") or os.environ.get("SERVERLESS"):
+        logger.debug(f"RETRIEVAL: {len(chunks) if chunks else 0} chunks for: {question[:50]}...")
+        return
+        )
 
     # return quick text + task id immediately
     return {"id": task_id, "text": quick_text}
