@@ -1,25 +1,61 @@
 # retrieval/searcher.py
 from qdrant_client import models
-from models.clients import get_models
+from models.clients import get_remote_embedding, get_models
 from retrieval.metadata_extractor import extract_metadata_from_query
 from config import *
 from utils.logger import timing_logger
 import time
+import os
+import logging
 
-embedder, qdrant_client, _ = get_models()
+# ===================== SETUP EMBED LOG =====================
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+LOG_DIR = os.path.join(BASE_DIR, "logs")
+os.makedirs(LOG_DIR, exist_ok=True)
 
-def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set, force_no_filter: bool = False) -> list[dict]:
+EMBED_LOG_PATH = os.path.join(LOG_DIR, "embed.log")
+
+embed_logger = logging.getLogger("embed_logger")
+embed_logger.setLevel(logging.INFO)
+
+if not embed_logger.handlers:
+    fh = logging.FileHandler(EMBED_LOG_PATH, encoding="utf-8")
+    formatter = logging.Formatter(
+        "%(asctime)s | %(levelname)s | %(message)s"
+    )
+    fh.setFormatter(formatter)
+    embed_logger.addHandler(fh)
+
+# ===================== INIT CLIENTS =====================
+qdrant_client, hf_client = get_models()
+
+def retrieve_from_qdrant(
+    query: str,
+    top_k: int,
+    exclude_ids: set,
+    force_no_filter: bool = False
+) -> list[dict]:
+
+    # ---------- EMBEDDING ----------
     t0 = time.time()
-    query_vec = embedder.encode(query, normalize_embeddings=True).tolist()
-    timing_logger.info(f"Embedding time: {time.time() - t0:.4f}s")
+    query_vec = get_remote_embedding(query)
+    embed_time = time.time() - t0
 
+    timing_logger.info(f"Embedding time: {embed_time:.4f}s")
+
+    embed_logger.info(
+        f"query='{query[:200]}' | dim={len(query_vec)} | time={embed_time:.4f}s | source=hf_space"
+    )
+
+    # ---------- METADATA ----------
     meta_filters, general_keywords = extract_metadata_from_query(query)
     timing_logger.info(f"Extracted filters: {meta_filters}")
 
     if force_no_filter:
         meta_filters = {}
-        general_keywords = []  # optional
+        general_keywords = []
         timing_logger.info("force_no_filter=True → bỏ toàn bộ metadata filter")
+
     must = []
     should = []
     must_not = [
@@ -27,21 +63,41 @@ def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set, force_no_filt
         for cid in exclude_ids
     ]
 
-    # Build filter conditions...
+    # ---------- FILTER BUILD ----------
     for key, val in meta_filters.items():
         if key == "document_number":
-            must.append(models.FieldCondition(key="document_number", match=models.MatchText(text=val)))
+            must.append(models.FieldCondition(
+                key="document_number",
+                match=models.MatchText(text=val)
+            ))
         elif key == "doc_type":
-            must.append(models.FieldCondition(key="doc_type", match=models.MatchValue(value=val)))
+            must.append(models.FieldCondition(
+                key="doc_type",
+                match=models.MatchValue(value=val)
+            ))
         elif key == "year":
-            must.append(models.FieldCondition(key="year", match=models.MatchValue(value=val)))
+            must.append(models.FieldCondition(
+                key="year",
+                match=models.MatchValue(value=val)
+            ))
         elif key == "issuer":
-            must.append(models.FieldCondition(key="issuer", match=models.MatchText(text=val)))
+            must.append(models.FieldCondition(
+                key="issuer",
+                match=models.MatchText(text=val)
+            ))
         elif key == "title_contains":
-            must.append(models.FieldCondition(key="title", match=models.MatchText(text=val)))
+            must.append(models.FieldCondition(
+                key="title",
+                match=models.MatchText(text=val)
+            ))
 
-    search_filter = models.Filter(must=must or None, should=should or None, must_not=must_not or None)
+    search_filter = models.Filter(
+        must=must or None,
+        should=should or None,
+        must_not=must_not or None
+    )
 
+    # ---------- QUERY QDRANT ----------
     results = qdrant_client.query_points(
         collection_name=COLLECTION_NAME,
         query=query_vec,
@@ -50,7 +106,7 @@ def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set, force_no_filt
         with_payload=True
     ).points
 
-    # Soft hybrid boosting
+    # ---------- SOFT HYBRID ----------
     boosted = []
     for hit in results:
         payload = hit.payload
@@ -65,7 +121,6 @@ def retrieve_from_qdrant(query: str, top_k: int, exclude_ids: set, force_no_filt
                     if payload_val and str(filter_val).lower() in str(payload_val).lower():
                         boost += weight
 
-            # Boost theo từ khóa trong source_file
             if general_keywords:
                 source = payload.get("source_file", "").lower()
                 matched = sum(1 for kw in general_keywords if kw in source)

@@ -10,9 +10,12 @@ from tqdm import tqdm
 from sentence_transformers import SentenceTransformer
 
 # ===================== CẤU HÌNH =====================
+from dotenv import load_dotenv
+load_dotenv()
 EMBEDDED_FILE = "embedded_chunks.pkl"
-QDRANT_HOST = "localhost"
+QDRANT_HOST = "914f5b70-3424-49a0-841f-80c4a1d7dac8.europe-west3-0.gcp.cloud.qdrant.io"
 QDRANT_PORT = 6333
+QDRANT_API_KEY = os.getenv("QDRANT_TOKEN")
 COLLECTION_NAME = "vietnamese_legal_chunks"
 MODEL_NAME = "Alibaba-NLP/gte-multilingual-base"
 
@@ -29,7 +32,7 @@ model = SentenceTransformer(MODEL_NAME, trust_remote_code=True)
 DIMENSION = len(model.encode("test").tolist())
 print(f"Vector dim: {DIMENSION}")
 
-client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, timeout=60)
+client = QdrantClient(host=QDRANT_HOST, port=QDRANT_PORT, api_key=QDRANT_API_KEY, timeout=60)
 
 # ===================== TẠO COLLECTION =====================
 try:
@@ -77,7 +80,7 @@ for field in ["document_number", "title", "text"]:
         client.create_payload_index(
             collection_name=COLLECTION_NAME,
             field_name=field,
-            field_schema=models.PayloadSchemaType.KEYWORD
+            field_schema=models.PayloadSchemaType.TEXT
         )
         print(f"Index: {field}")
     except:
@@ -98,11 +101,18 @@ for query in test_queries:
         with_payload=True,
         query_filter=models.Filter(
             should=[
-                models.FieldCondition(key="document_number", match=models.MatchText(text=query)),
-                models.FieldCondition(key="title", match=models.MatchText(text=query)),
+                models.FieldCondition(
+                    key="document_number",
+                    match=models.MatchText(text=query)
+                ),
+                models.FieldCondition(
+                    key="title",
+                    match=models.MatchText(text=query)
+                ),
             ]
         )
     )
+
 
     for i, hit in enumerate(result.points):
         p = hit.payload

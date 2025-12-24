@@ -9,9 +9,12 @@ TEMPERATURE = 0.8
 LOG_FILE = "processing"
 MODEL_NAME = "Alibaba-NLP/gte-multilingual-base"
 MIN_INPUT_LENGTH_TO_RETRIEVAL = 5
-QDRANT_HOST = "localhost"
+# qdrant config
+# QDRANT_HOST = "localhost"
+QDRANT_HOST = "914f5b70-3424-49a0-841f-80c4a1d7dac8.europe-west3-0.gcp.cloud.qdrant.io"
 QDRANT_PORT = 6333
 COLLECTION_NAME = "vietnamese_legal_chunks"
+
 DEBOUNCE_TIME = 1.5  # ← Chống spam: số s giữa các lần tìm
 ENABLE_HYBRID_SEARCH = False
 # === SOFT HYBRID SEARCH BOOST CONFIG ===
@@ -29,7 +32,7 @@ ENABLE_SOFT_HYBRID = True
 
 SUBMIT_RETRIEVAL_BOOST = 0.15
 
-# Thêm cấu hình ASR
+# ASR config
 ASR_API_URL = "https://Hoangnam5904-STT.hf.space/transcribe_file"
 ASR_CHUNK_DURATION = 5.0
 ASR_OVERLAP = 0.25

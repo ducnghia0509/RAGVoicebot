@@ -3,14 +3,9 @@ import io
 import time
 import logging
 import requests
-import subprocess
-from pathlib import Path
 from typing import Optional, Literal
 
 logger = logging.getLogger(__name__)
-
-# Đường dẫn ffmpeg offline của bạn
-FFMPEG = Path(r"C:\Users\DELL\Downloads\ffmpeg-7.1.1-essentials_build\bin\ffmpeg.exe")
 
 class TTSClient:
     def __init__(self, endpoint: str, max_retries: int = 2):
@@ -43,24 +38,6 @@ class TTSClient:
     def _enter_cooldown(self, duration=8.0):
         self._cooldown_until = time.time() + duration
         logger.warning(f"Entering short cooldown {duration}s (failures={self._consecutive_failures})")
-
-    def _speed_up_to_1_5x(self, mp3_bytes: bytes) -> io.BytesIO:
-        cmd = [
-            str(FFMPEG), "-i", "pipe:0",
-            "-filter:a", "atempo=1.5",
-            "-ar", "24000", "-ac", "1", "-f", "wav", "pipe:1",
-            "-loglevel", "quiet", "-nostats", "-hide_banner"
-        ]
-        result = subprocess.run(
-            cmd,
-            input=mp3_bytes,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=True
-        )
-        buf = io.BytesIO(result.stdout)
-        buf.seek(0)
-        return buf
 
     def speak_to_buffer(
         self,
@@ -105,11 +82,9 @@ class TTSClient:
                         raise Exception("Audio too small")
 
                     mp3_buf.seek(0)
-                    wav_1_5x = self._speed_up_to_1_5x(mp3_buf.getvalue())
-
                     self._consecutive_failures = 0
-                    logger.info(f"Streaming TTS success → 1.5x WAV ({len(wav_1_5x.getvalue())} bytes)")
-                    return wav_1_5x
+                    logger.info(f"Streaming TTS success → MP3 ({len(mp3_buf.getvalue())} bytes)")
+                    return mp3_buf
 
                 except requests.exceptions.ConnectionError:
                     logger.error("Local network error → skipping failure count")
@@ -137,9 +112,8 @@ class TTSClient:
                 buf = io.BytesIO()
                 tts.write_to_fp(buf)
                 buf.seek(0)
-                wav_1_5x = self._speed_up_to_1_5x(buf.getvalue())
-                logger.info(f"gTTS fallback success → 1.5x WAV (attempt {attempt+1})")
-                return wav_1_5x
+                logger.info(f"gTTS fallback success → MP3 (attempt {attempt+1})")
+                return buf
             except Exception as e:
                 logger.error(f"gTTS failed: {e}")
                 time.sleep(0.5)

@@ -16,7 +16,6 @@ class ASRClient:
     """
     Client for Automatic Speech Recognition (ASR) service
     Supports both streaming and file-based transcription
-    WITHOUT DEPENDENCY ON PYDUB/FFMPEG
     """
     
     def __init__(self, 
@@ -91,21 +90,11 @@ class ASRClient:
     
     def _webm_to_wav(self, webm_bytes: bytes, sr: int = 16000) -> Optional[bytes]:
         """
-        Simple WebM to WAV conversion using pydub if available, else return None
+        WebM/Opus conversion - no longer supported without ffmpeg
+        Return None to let API handle the raw bytes
         """
-        try:
-            # Try to use pydub if available
-            from pydub import AudioSegment
-            audio = AudioSegment.from_file(io.BytesIO(webm_bytes), format="webm")
-            wav_buffer = io.BytesIO()
-            audio.export(wav_buffer, format="wav", parameters=["-ar", str(sr), "-ac", "1"])
-            return wav_buffer.getvalue()
-        except ImportError:
-            logger.warning("pydub not available for WebM conversion")
-            return None
-        except Exception as e:
-            logger.error(f"WebM to WAV conversion failed: {e}")
-            return None
+        logger.warning("WebM conversion skipped - sending raw bytes to API")
+        return None
     
     def _decode_audio_bytes(self, audio_bytes: bytes, mime_type: str = None) -> Optional[tuple]:
         """

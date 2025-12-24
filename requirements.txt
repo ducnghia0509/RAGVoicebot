@@ -1,6 +1,6 @@
 qdrant_client
 # gtts
-pydub
+# pydub  # Removed - no longer needed without ffmpeg
 # TTS
 requests
 fastapi

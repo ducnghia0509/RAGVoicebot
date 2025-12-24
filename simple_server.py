@@ -2,36 +2,6 @@ import os
 import time
 import uuid
 import logging
-from pydub import AudioSegment, silence
-# Explicit ffmpeg binary (Windows) provided by user
-# --- FFMPEG SETUP FIXED ---
-FFMPEG_DIR = "./ffmpeg-7.1.1-essentials_build/bin"
-FFMPEG_PATH = os.path.join(FFMPEG_DIR, "ffmpeg.exe")
-FFPROBE_PATH = os.path.join(FFMPEG_DIR, "ffprobe.exe")
-
-# Kiểm tra file tồn tại
-if not os.path.exists(FFMPEG_PATH):
-    logger = logging.getLogger("simple_server")
-    logger.error(f"FFMPEG not found at: {FFMPEG_PATH}")
-    raise FileNotFoundError(f"FFMPEG not found at: {FFMPEG_PATH}")
-
-if not os.path.exists(FFPROBE_PATH):
-    logger = logging.getLogger("simple_server")
-    logger.warning(f"FFPROBE not found at: {FFPROBE_PATH}")
-
-# Thiết lập đường dẫn cho pydub
-os.environ["FFMPEG_BINARY"] = FFMPEG_PATH
-os.environ["FFPROBE_BINARY"] = FFPROBE_PATH
-
-try:
-    AudioSegment.converter = FFMPEG_PATH
-    AudioSegment.ffprobe = FFPROBE_PATH
-    logger = logging.getLogger("simple_server")
-    logger.info(f"Using ffmpeg: {FFMPEG_PATH}")
-    logger.info(f"Using ffprobe: {FFPROBE_PATH}")
-except Exception as e:
-    logger = logging.getLogger("simple_server")
-    logger.error(f"Failed to set ffmpeg paths: {e}")
 from typing import List
 import threading
 import re
@@ -76,8 +46,8 @@ app.mount("/static", StaticFiles(directory=os.path.join(BASE_DIR, "static")), na
 
 
 # --- Models / clients init ---
-logger.debug("Initializing models (embedder, qdrant_client, hf_client)")
-embedder, qdrant_client, hf_client = get_models()
+logger.debug("Initializing models (qdrant_client, hf_client)")
+qdrant_client, hf_client = get_models()
 logger.debug("Models initialized")
 
 # --- Background task management & tasks store ---
@@ -123,115 +93,48 @@ def _now():
     return int(time.time() * 1000)
 
 
-def _chunk_text_to_batches(text: str, target_words: int = 10, max_words: int = 30):
+def _extract_complete_sentences(text: str):
     """
-    Split text into ordered batches suitable for TTS:
-    - First split by sentence delimiters (.!?), preserving tokens.
-    - Merge adjacent sentences until roughly `target_words` reached, but never exceed `max_words`.
-    - If a single sentence is longer than `max_words`, split it by words into sub-batches.
-
-    Returns (batches, remainder) where remainder is the tail text that wasn't large enough to emit yet.
+    Return (sentences, remainder)
+    - Remove markdown ** (bold)
+    - Replace ** with '-' for smoother TTS
+    - Keep commas, periods, sentence-ending punctuation
     """
     if not text or not text.strip():
         return [], ''
 
-    # split by sentence delimiters, keep delimiter
-    parts = re.split(r'([\.\!\?]+)\s*', text)
-    # rebuild sentences: combine text + following delimiter
-    sentences = []
-    i = 0
-    while i < len(parts):
-        if parts[i].strip() == '':
-            i += 1
-            continue
-        if i + 1 < len(parts) and re.match(r'[\.\!\?]+', parts[i+1]):
-            sent = (parts[i] + parts[i+1]).strip()
-            i += 2
-        else:
-            sent = parts[i].strip()
-            i += 1
-        if sent:
-            sentences.append(sent)
+    import re
 
-    batches = []
-    current = []
-    current_words = 0
+    # ---------- CLEAN INVALID PUNCTUATION FOR TTS ----------
+    # Replace markdown bold ** with dash
+    text = text.replace("**", "-")
 
-    def flush_current():
-        nonlocal current, current_words
-        if current:
-            batches.append(' '.join(current).strip())
-            current = []
-            current_words = 0
-
-    for sent in sentences:
-        words = sent.split()
-        wcount = len(words)
-        if wcount >= max_words:
-            # split long sentence into word chunks
-            for start in range(0, wcount, max_words):
-                sub = words[start:start+max_words]
-                if current:
-                    # flush existing first to keep order
-                    flush_current()
-                batches.append(' '.join(sub).strip())
-        else:
-            if current_words + wcount <= max_words:
-                current.append(sent)
-                current_words += wcount
-                # if reached target, flush
-                if current_words >= target_words:
-                    flush_current()
-            else:
-                # flush current and start new
-                flush_current()
-                current.append(sent)
-                current_words = wcount
-                if current_words >= target_words:
-                    flush_current()
-
-    # remainder is anything left in current
-    remainder = ''
-    if current:
-        remainder = ' '.join(current).strip()
-
-    return batches, remainder
-
-def _extract_complete_sentences(text: str):
-    """
-    Return (sentences, remainder)
-    FIXED: Normalize whitespace để tránh trùng lặp do space khác nhau
-    """
-    if not text:
-        return [], ''
-
-    import re as _re
-    
-    # Normalize: strip leading/trailing, collapse multiple spaces
+    # Normalize whitespace
     text = ' '.join(text.split())
-    
-    pause_chars = r"\.\!\?,;:\-\u2013\u2014\u2026"
-    pattern = fr"(.+?(?:[{pause_chars}]+)(?:['\"\)\]]+)?)\s*"
 
-    matches = [m.group(1).strip() for m in _re.finditer(pattern, text, flags=_re.S)]
+    # Pattern to match sentences ending with .!? and optional quotes/parentheses
+    # Handles cases like: "Hello!" he said.
+    pattern = r'([^.!?\n]+(?:[.!?]+["\')\]]*)\s*)'
 
+    sentences = []
+    matches = list(re.finditer(pattern, text))
+
+    for match in matches:
+        sentence = match.group(1).strip()
+        if sentence:
+            sentences.append(sentence)
+
+    # Find remainder
     if matches:
         last_match = matches[-1]
-        end_pos = None
-        for m in _re.finditer(pattern, text, flags=_re.S):
-            if m.group(1).strip() == last_match:
-                end_pos = m.end(1)
-
-        if end_pos is None:
-            end_pos = text.rfind(last_match) + len(last_match)
-
-        remainder = text[end_pos:].strip()  # STRIP remainder
-        cleaned = [s.strip() for s in matches]
-
-        return cleaned, remainder
+        remainder = text[last_match.end():].strip()
     else:
-        return [], text
-    
+        remainder = text.strip()
+
+    return sentences, remainder
+
+
+
 class AskRequest(BaseModel):
     question: str
 
@@ -245,70 +148,9 @@ def _write_audio_buffer_to_file(buffer, prefix="audio"):
             buffer.seek(0)
             f.write(buffer.read())
         logger.debug(f"Wrote TTS to file: {path}")
-        # Trim silence to avoid gaps at boundaries
-        try:
-            _trim_silence_file(path)
-        except Exception:
-            logger.exception("Trimming silence failed")
         return fname, path
     except Exception as e:
         logger.exception("Failed to write audio file")
-        raise
-
-
-def _trim_silence_file(path: str, silence_thresh: int = -40, min_silence_len: int = 120) -> str:
-    """Trim leading/trailing silence from WAV file in-place. Returns path."""
-    try:
-        seg = AudioSegment.from_file(path, format="wav")
-        dur = len(seg)
-        silences = silence.detect_silence(seg, min_silence_len=min_silence_len, silence_thresh=silence_thresh)
-        start_trim = 0
-        end_trim = dur
-        if silences:
-            # leading
-            if silences[0][0] == 0:
-                start_trim = silences[0][1]
-            # trailing
-            if silences[-1][1] >= dur:
-                end_trim = silences[-1][0]
-        # guard
-        if start_trim > 0 or end_trim < dur:
-            trimmed = seg[start_trim:end_trim]
-            trimmed.export(path, format="wav")
-            logger.debug(f"Trimmed silence for {path}: start={start_trim}ms end={end_trim}ms")
-    except Exception:
-        logger.exception(f"Error trimming silence for {path}")
-    return path
-
-
-def _merge_audio_files(file_paths: List[str], out_path: str, crossfade_ms: int = 30) -> str:
-    """Merge list of WAV files into one with small crossfade. Returns out_path."""
-    try:
-        combined = AudioSegment.empty()
-        for p in file_paths:
-            if not os.path.exists(p):
-                logger.debug(f"Merge: missing file {p}, skipping")
-                continue
-            seg = AudioSegment.from_file(p, format="wav")
-            if len(combined) == 0:
-                combined = seg
-            else:
-                # append with crossfade
-                try:
-                    combined = combined.append(seg, crossfade=crossfade_ms)
-                except Exception:
-                    # fallback without crossfade
-                    combined = combined + seg
-        combined.export(out_path, format="wav")
-        logger.debug(f"Merged {len(file_paths)} files -> {out_path}")
-        # trim resulting file
-        try:
-            _trim_silence_file(out_path)
-        except Exception:
-            pass
-        return out_path
-    except Exception:
-        logger.exception("Failed to merge audio files")
         raise
 
 
