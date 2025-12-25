@@ -647,6 +647,16 @@ class GoogleStreamingASR:
                 if result.alternatives
             ])
             
+            # Check if transcript is empty (silent audio or no speech)
+            if not transcript or not transcript.strip():
+                logger.warning("No speech detected in audio")
+                return {
+                    "text": "",
+                    "language": self.lang,
+                    "success": False,
+                    "error": "No speech detected in audio"
+                }
+            
             return {
                 "text": transcript,
                 "language": self.lang,

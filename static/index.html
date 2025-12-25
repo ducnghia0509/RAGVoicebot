@@ -9,6 +9,33 @@
       textarea{width:100%;height:120px}
       button{padding:10px 16px;margin-top:8px}
       #log{background:#111;color:#bfbfbf;padding:10px;height:200px;overflow:auto;font-size:12px}
+      
+      /* Responsive layout */
+      .main-container {
+        display: flex;
+        gap: 20px;
+        flex-wrap: wrap;
+      }
+      
+      .voice-section {
+        flex: 1;
+        min-width: 300px;
+      }
+      
+      .file-upload-section {
+        flex: 0 0 280px;
+        min-width: 280px;
+      }
+      
+      /* Mobile: stack vertically */
+      @media (max-width: 768px) {
+        .main-container {
+          flex-direction: column;
+        }
+        .file-upload-section {
+          flex: 1;
+        }
+      }
     </style>
   </head>
   <body>
@@ -17,28 +44,34 @@
       #question, #askBtn, #respText, #player, #log { display: none !important; }
     </style>
 
-    <!-- Thêm vào body của index.html -->
-<h3>Voice Input</h3>
-<div>
-    <button id="recordBtn" style="padding: 12px 24px; font-size: 16px; background: #4CAF50; color: white; border: none; border-radius: 4px;">
-        🎤 Start Recording
-    </button>
-    <button id="stopBtn" style="padding: 12px 24px; font-size: 16px; background: #f44336; color: white; border: none; border-radius: 4px; display: none;">
-        ⏹️ Stop Recording
-    </button>
-    <span id="recordingStatus" style="margin-left: 10px; color: #666;"></span>
-</div>
+    <div class="main-container">
+      <!-- Voice section (left/main) -->
+      <div class="voice-section">
+        <h3>Voice Input</h3>
+        <div>
+            <button id="recordBtn" style="padding: 12px 24px; font-size: 16px; background: #4CAF50; color: white; border: none; border-radius: 4px; cursor: pointer;">
+                🎤 Start Recording
+            </button>
+            <button id="stopBtn" style="padding: 12px 24px; font-size: 16px; background: #f44336; color: white; border: none; border-radius: 4px; display: none; cursor: pointer;">
+                ⏹️ Stop Recording
+            </button>
+            <span id="recordingStatus" style="margin-left: 10px; color: #666;"></span>
+        </div>
 
-<div id="audioVisualizer" style="margin: 10px 0; height: 60px; border: 1px solid #ddd;"></div>
+        <div id="audioVisualizer" style="margin: 10px 0; height: 60px; border: 1px solid #ddd;"></div>
 
-<audio id="recordedAudio" controls style="width: 100%; margin: 10px 0;"></audio>
+        <audio id="recordedAudio" controls style="width: 100%; margin: 10px 0;"></audio>
+      </div>
 
-    <!-- Box thả file WAV -->
-    <div style="margin: 20px 0; padding: 16px; border: 2px dashed #aaa; border-radius: 8px; background: #fafafa; text-align: center;">
-        <strong>Hoặc thả file WAV vào đây để test:</strong><br>
-        <input type="file" id="wavInput" accept="audio/wav,audio/x-wav" style="margin-top: 10px;">
-        <div id="wavDropZone" style="margin-top: 10px; padding: 20px; border: 2px dashed #4CAF50; border-radius: 6px; background: #f6fff6; color: #333; cursor: pointer;">Kéo và thả file WAV vào đây</div>
-        <div id="wavStatus" style="margin-top: 8px; color: #666; font-size: 14px;"></div>
+      <!-- File upload section (right/sidebar) -->
+      <div class="file-upload-section">
+        <h4 style="margin-top: 0;">📁 Upload WAV</h4>
+        <input type="file" id="wavInput" accept="audio/wav,audio/x-wav" style="display: none;">
+        <div id="wavDropZone" style="padding: 30px 15px; border: 2px dashed #4CAF50; border-radius: 6px; background: #f6fff6; color: #333; cursor: pointer; text-align: center; font-size: 14px;">
+          Kéo thả WAV vào đây<br>hoặc click để chọn
+        </div>
+        <div id="wavStatus" style="margin-top: 8px; color: #666; font-size: 13px; text-align: center;"></div>
+      </div>
     </div>
 
 <script>
@@ -72,6 +105,12 @@
     // Start recording
     async function startRecording() {
         try {
+            // Immediately update UI to show recording state
+            recordBtn.style.display = 'none';
+            stopBtn.style.display = 'inline-block';
+            recordingStatus.textContent = '🎤 Recording...';
+            recordingStatus.style.color = '#f44336';
+            
             const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
             
             // Setup audio context for visualization
@@ -120,14 +159,14 @@
             mediaRecorder.start(1000); // Collect data every second
             isRecording = true;
             
-            recordBtn.style.display = 'none';
-            stopBtn.style.display = 'inline-block';
-            recordingStatus.textContent = '🎤 Recording...';
-            recordingStatus.style.color = '#f44336';
-            
         } catch (error) {
             console.error('Error starting recording:', error);
             alert('Cannot access microphone. Please check permissions.');
+            // Reset UI on error
+            recordBtn.style.display = 'inline-block';
+            stopBtn.style.display = 'none';
+            recordingStatus.textContent = '❌ Error accessing microphone';
+            recordingStatus.style.color = '#f44336';
         }
     }
 
@@ -180,10 +219,10 @@
     // Xử lý file wav được chọn hoặc thả vào
     async function handleWavFile(file) {
         if (!file || !file.type.match(/^audio\/(wav|x-wav)$/)) {
-            wavStatus.textContent = '❌ File không hợp lệ, chỉ nhận .wav';
+            wavStatus.textContent = '❌ File không hợp lệ';
             return;
         }
-        wavStatus.textContent = '⏳ Đang gửi file để nhận phản hồi...';
+        wavStatus.textContent = '⏳ Đang xử lý...';
         try {
             // Hiển thị file lên audio player
             const url = URL.createObjectURL(file);
@@ -195,18 +234,18 @@
             const resp = await fetch('/transcribe', { method: 'POST', body: formData });
             const result = await resp.json();
             if (result.success && result.text) {
-                wavStatus.textContent = `✅ Nhận diện: ${result.text.substring(0, 50)}...`;
+                wavStatus.textContent = `✅ "${result.text.substring(0, 30)}..."`;
                 // Gửi tiếp text này để nhận audio phản hồi
                 await sendTextForVoiceResponse(result.text);
             } else {
                 let msg = '❌ Nhận diện thất bại';
                 if (!result.text || (typeof result.text === 'string' && result.text.trim() === '')) {
-                    msg = 'Không nhận được lời nói nào từ file WAV.';
+                    msg = '⚠️ Không nhận được lời nói';
                 }
                 wavStatus.textContent = msg;
             }
         } catch (e) {
-            wavStatus.textContent = '❌ Lỗi khi gửi file WAV';
+            wavStatus.textContent = '❌ Lỗi khi gửi file';
             console.error(e);
         }
     }

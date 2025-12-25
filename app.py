@@ -443,16 +443,21 @@ def transcribe_base64(payload: dict):
         mime_type = payload.get("mime_type", None)
         
         if not audio_base64:
-            raise HTTPException(status_code=400, detail="No audio data provided")
+            return {"success": False, "error": "No audio data provided", "text": ""}
         
         # Use new transcribe_base64 method
         asr_client = get_asr_client()
         result = asr_client.transcribe_base64(audio_base64, sample_rate, stream, mime_type)
+        
+        # Handle empty/silent audio gracefully
+        if not result.get("success"):
+            logger.warning(f"Transcription unsuccessful: {result.get('error', 'Unknown error')}")
+        
         return result
         
     except Exception as e:
         logger.exception(f"Base64 transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        return {"success": False, "error": str(e), "text": ""}
     
     
 @app.post("/transcribe")
