@@ -389,7 +389,7 @@ class GoogleStreamingASR:
         # Optimized config for low latency and high accuracy
         self.config = speech.RecognitionConfig(
             encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
-            sample_rate_hertz=sample_rate,
+            # sample_rate_hertz removed - will be set per request based on actual audio
             language_code=lang,
             # Enable enhanced model for better speed and accuracy
             use_enhanced=use_enhanced,
@@ -587,21 +587,56 @@ class GoogleStreamingASR:
         
         Args:
             audio_bytes: Raw audio bytes
-            sample_rate: Sample rate (ignored, uses config)
+            sample_rate: Sample rate of the audio
             stream: If True, use streaming (currently ignored)
-            mime_type: MIME type of audio (ignored)
+            mime_type: MIME type of audio (used to detect encoding)
             
         Returns:
             Dict with 'text', 'success', and optional 'error' keys
         """
         try:
-            logger.debug(f"Transcribing bytes, length: {len(audio_bytes)}")
+            logger.debug(f"Transcribing bytes, length: {len(audio_bytes)}, sample_rate: {sample_rate}, mime: {mime_type}")
+            
+            # Detect encoding from MIME type
+            encoding = speech.RecognitionConfig.AudioEncoding.LINEAR16  # Default
+            if mime_type:
+                if 'webm' in mime_type or 'opus' in mime_type:
+                    encoding = speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
+                elif 'ogg' in mime_type:
+                    encoding = speech.RecognitionConfig.AudioEncoding.OGG_OPUS
+                elif 'flac' in mime_type:
+                    encoding = speech.RecognitionConfig.AudioEncoding.FLAC
+                elif 'mp3' in mime_type:
+                    encoding = speech.RecognitionConfig.AudioEncoding.MP3
+            
+            # For WEBM_OPUS, OGG_OPUS, FLAC - let Google auto-detect sample rate
+            # Only set sample_rate_hertz for LINEAR16 and MP3
+            config_params = {
+                'encoding': encoding,
+                'language_code': self.lang,
+                'use_enhanced': self.config.use_enhanced,
+                'model': self.config.model,
+                'enable_automatic_punctuation': True,
+                'audio_channel_count': 1,
+            }
+            
+            # Only add sample_rate_hertz for formats that require it
+            if encoding in [
+                speech.RecognitionConfig.AudioEncoding.LINEAR16,
+                speech.RecognitionConfig.AudioEncoding.MP3
+            ]:
+                config_params['sample_rate_hertz'] = sample_rate
+            
+            # Create config with dynamic encoding
+            config = speech.RecognitionConfig(**config_params)
+            
+            logger.debug(f"Using encoding: {encoding}, sample_rate: {sample_rate if encoding == speech.RecognitionConfig.AudioEncoding.LINEAR16 else 'auto-detect'}")
             
             # Use synchronous recognition
             audio = speech.RecognitionAudio(content=audio_bytes)
             
             response = self.client.recognize(
-                config=self.config,
+                config=config,  # Use dynamic config
                 audio=audio
             )
             
