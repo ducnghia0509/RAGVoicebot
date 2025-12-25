@@ -44,10 +44,14 @@ def setup_gcp_credentials_from_env():
 
     missing = [k for k in required_keys if k not in os.environ]
     if missing:
-        raise RuntimeError(
+        logger.warning(
             f"Missing GCP environment variables: {', '.join(missing)}. "
+            f"Google Cloud services (ASR) will not be available. "
             f"Either provide a client_secret.json file or set these env vars."
         )
+        # Set a flag to indicate GCP is not available
+        os.environ["GCP_DISABLED"] = "true"
+        return
 
     data = {
         "type": os.environ["GCP_TYPE"],

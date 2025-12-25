@@ -51,6 +51,7 @@
     let dataArray = null;
     let canvas = null;
     let canvasCtx = null;
+    let actualSampleRate = 16000; // Will be set from AudioContext
 
     const recordBtn = document.getElementById('recordBtn');
     const stopBtn = document.getElementById('stopBtn');
@@ -75,6 +76,9 @@
             
             // Setup audio context for visualization
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
+            actualSampleRate = audioContext.sampleRate; // Capture actual sample rate (usually 48000)
+            console.log('Detected sample rate:', actualSampleRate);
+            
             analyser = audioContext.createAnalyser();
             const source = audioContext.createMediaStreamSource(stream);
             source.connect(analyser);
@@ -222,7 +226,7 @@
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     audio_data: base64Audio.split(',')[1],
-                    sample_rate: 16000,
+                    sample_rate: actualSampleRate, // Use actual sample rate instead of hardcoded 16000
                     stream: false,
                     mime_type: audioBlob.type
                 })
