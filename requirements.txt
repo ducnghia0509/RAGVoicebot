@@ -11,3 +11,4 @@ pydantic
 aiofiles
 python-dotenv
 google-cloud-speech
+scipy

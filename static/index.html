@@ -61,6 +61,11 @@
         <div id="audioVisualizer" style="margin: 10px 0; height: 60px; border: 1px solid #ddd;"></div>
 
         <audio id="recordedAudio" controls style="width: 100%; margin: 10px 0;"></audio>
+        
+        <!-- Thêm thông tin về sample rate -->
+        <div id="sampleRateInfo" style="font-size: 12px; color: #666; margin-top: 5px;">
+          Sample rate: <span id="currentSampleRate">-</span> Hz
+        </div>
       </div>
 
       <!-- File upload section (right/sidebar) -->
@@ -91,7 +96,7 @@
     const recordingStatus = document.getElementById('recordingStatus');
     const audioVisualizer = document.getElementById('audioVisualizer');
     const recordedAudio = document.getElementById('recordedAudio');
-    // const questionTextarea = document.getElementById('question');
+    const currentSampleRate = document.getElementById('currentSampleRate');
 
     // Setup audio visualizer
     function setupVisualizer() {
@@ -111,11 +116,18 @@
             recordingStatus.textContent = '🎤 Recording...';
             recordingStatus.style.color = '#f44336';
             
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const stream = await navigator.mediaDevices.getUserMedia({ 
+                audio: {
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    sampleRate: 16000 // Yêu cầu sample rate thấp hơn ngay từ đầu
+                }
+            });
             
             // Setup audio context for visualization
             audioContext = new (window.AudioContext || window.webkitAudioContext)();
             actualSampleRate = audioContext.sampleRate; // Capture actual sample rate (usually 48000)
+            currentSampleRate.textContent = actualSampleRate;
             console.log('Detected sample rate:', actualSampleRate);
             
             analyser = audioContext.createAnalyser();
@@ -131,8 +143,19 @@
             // Start visualization
             drawVisualizer();
             
-            // Setup media recorder
-            mediaRecorder = new MediaRecorder(stream);
+            // Setup media recorder với cấu hình chất lượng thấp hơn
+            const options = {
+                mimeType: 'audio/webm;codecs=opus',
+                audioBitsPerSecond: 16000 // Bitrate thấp hơn
+            };
+            
+            try {
+                mediaRecorder = new MediaRecorder(stream, options);
+            } catch (e) {
+                console.warn('WebM/Opus not supported, using default:', e);
+                mediaRecorder = new MediaRecorder(stream);
+            }
+            
             audioChunks = [];
             
             mediaRecorder.ondataavailable = (event) => {
@@ -143,12 +166,12 @@
             
             mediaRecorder.onstop = async () => {
                 // Create audio blob
-                const audioBlob = new Blob(audioChunks, { type: 'audio/wav' });
+                const audioBlob = new Blob(audioChunks, { type: 'audio/webm' });
                 const audioUrl = URL.createObjectURL(audioBlob);
                 recordedAudio.src = audioUrl;
                 
-                // Transcribe audio
-                await transcribeAudio(audioBlob);
+                // Chuyển đổi sample rate và transcribe
+                await resampleAndTranscribe(audioBlob, actualSampleRate, 16000);
                 
                 // Cleanup
                 stream.getTracks().forEach(track => track.stop());
@@ -167,6 +190,91 @@
             stopBtn.style.display = 'none';
             recordingStatus.textContent = '❌ Error accessing microphone';
             recordingStatus.style.color = '#f44336';
+        }
+    }
+
+    // Hàm resample audio từ sample rate cao xuống 16000
+    async function resampleAndTranscribe(audioBlob, originalSampleRate, targetSampleRate = 16000) {
+        try {
+            recordingStatus.textContent = '⏳ Resampling audio...';
+            
+            // Tạo AudioContext mới để xử lý resample
+            const offlineContext = new OfflineAudioContext(
+                1, // Mono
+                Math.ceil(audioBlob.size * targetSampleRate / originalSampleRate),
+                targetSampleRate
+            );
+            
+            // Tạo AudioBuffer từ blob
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            const audioBuffer = await offlineContext.decodeAudioData(arrayBuffer);
+            
+            // Tạo source từ buffer
+            const source = offlineContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(offlineContext.destination);
+            source.start(0);
+            
+            // Render audio với sample rate mới
+            const resampledBuffer = await offlineContext.startRendering();
+            
+            // Chuyển AudioBuffer thành WAV bytes
+            const wavBytes = audioBufferToWav(resampledBuffer, targetSampleRate);
+            
+            // Tạo blob mới với sample rate đã chuyển đổi
+            const resampledBlob = new Blob([wavBytes], { type: 'audio/wav' });
+            
+            console.log(`Resampled audio from ${originalSampleRate}Hz to ${targetSampleRate}Hz`);
+            currentSampleRate.textContent = `${originalSampleRate} → ${targetSampleRate} Hz`;
+            
+            // Gửi audio đã resample để transcribe
+            await transcribeAudio(resampledBlob, targetSampleRate);
+            
+        } catch (error) {
+            console.error('Error resampling audio:', error);
+            // Fallback: gửi audio gốc nếu resample thất bại
+            recordingStatus.textContent = '⏳ Transcribing (original sample rate)...';
+            await transcribeAudio(audioBlob, originalSampleRate);
+        }
+    }
+
+    // Hàm chuyển AudioBuffer thành WAV bytes
+    function audioBufferToWav(buffer, sampleRate) {
+        const numChannels = buffer.numberOfChannels;
+        const length = buffer.length * numChannels * 2;
+        const data = new DataView(new ArrayBuffer(44 + length));
+        
+        // Write WAV header
+        writeString(data, 0, 'RIFF');
+        data.setUint32(4, 36 + length, true);
+        writeString(data, 8, 'WAVE');
+        writeString(data, 12, 'fmt ');
+        data.setUint32(16, 16, true);
+        data.setUint16(20, 1, true); // PCM format
+        data.setUint16(22, numChannels, true);
+        data.setUint32(24, sampleRate, true);
+        data.setUint32(28, sampleRate * numChannels * 2, true);
+        data.setUint16(32, numChannels * 2, true);
+        data.setUint16(34, 16, true); // 16-bit
+        writeString(data, 36, 'data');
+        data.setUint32(40, length, true);
+        
+        // Write PCM data
+        let offset = 44;
+        for (let i = 0; i < buffer.length; i++) {
+            for (let channel = 0; channel < numChannels; channel++) {
+                const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                data.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
+                offset += 2;
+            }
+        }
+        
+        return new Uint8Array(data.buffer);
+    }
+
+    function writeString(data, offset, string) {
+        for (let i = 0; i < string.length; i++) {
+            data.setUint8(offset + i, string.charCodeAt(i));
         }
     }
 
@@ -251,21 +359,21 @@
     }
 
 
-    // Transcribe audio to text
-    async function transcribeAudio(audioBlob) {
+    // Transcribe audio to text (đã resample)
+    async function transcribeAudio(audioBlob, sampleRate = 16000) {
         try {
             recordingStatus.textContent = '⏳ Transcribing...';
             
             // Convert to base64
             const base64Audio = await blobToBase64(audioBlob);
             
-            // Use new endpoint
+            // Use new endpoint với sample rate đã resample
             const response = await fetch('/transcribe_base64', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     audio_data: base64Audio.split(',')[1],
-                    sample_rate: actualSampleRate, // Use actual sample rate instead of hardcoded 16000
+                    sample_rate: sampleRate, // Sử dụng sample rate đã resample
                     stream: false,
                     mime_type: audioBlob.type
                 })

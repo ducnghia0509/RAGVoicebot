@@ -1,5 +1,4 @@
 # retrieval/searcher.py
-from qdrant_client import models
 from models.clients import get_remote_embedding, get_models
 from retrieval.metadata_extractor import extract_metadata_from_query
 from config import *

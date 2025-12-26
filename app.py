@@ -23,7 +23,12 @@ from prompt.builder import build_context_and_prompt
 from typing import Optional 
 from config import *
 from utils.csv_logger import get_csv_logger
-
+# Thêm ở đầu file (nếu chưa có)
+try:
+    from scipy import signal
+    HAS_SCIPY = True
+except ImportError:
+    HAS_SCIPY = False
 
 # --- Logging setup ---
 # Use /tmp for logs in serverless environment
@@ -182,7 +187,7 @@ def _write_audio_buffer_to_file(buffer, prefix="audio"):
         raise
 
 
-def _background_process_all(task_id: str, question: str,audio_data: Optional[bytes] = None):
+def _background_process_all(task_id: str, question: str, audio_data: Optional[bytes] = None):
     
     logger.debug(f"[BG] Start background process for id={task_id}")
     
@@ -198,14 +203,27 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
     if audio_data:
         try:
             asr_client = get_asr_client()
-            transcription = asr_client.transcribe_bytes(audio_data, 16000, stream=False)
+            
+            # Sử dụng hàm transcribe với resample
+            # Giả sử sample rate gốc là 48000 (thông thường từ mic)
+            original_sample_rate = 48000  # Hoặc có thể nhận từ param nếu cần
+            
+            logger.debug(f"[BG] Transcribing audio data: {len(audio_data)} bytes, sample_rate={original_sample_rate}")
+            
+            transcription = asr_client.transcribe_bytes_with_resample(
+                audio_bytes=audio_data,
+                original_sample_rate=original_sample_rate,
+                target_sample_rate=16000,  # Resample về 16000
+                mime_type='audio/webm'  # Định dạng từ microphone recording
+            )
             
             if transcription.get('success'):
                 question = transcription.get('text', question)
                 _safe_update_task(task_id, original_audio=True, transcribed_text=question)
                 trace_event(task_id, 'asr_complete', {'transcribed_text': question})
+                logger.debug(f"[BG] Transcribed text: {question[:100]}...")
         except Exception as e:
-            logger.exception(f"ASR failed for task {task_id}")
+            logger.exception(f"ASR failed for task {task_id}: {e}")
     try:
         _safe_update_task(task_id, bg_started_at=_now())
         # 1. quick audio (if quick_text exists)
@@ -431,6 +449,7 @@ def _background_process_all(task_id: str, question: str,audio_data: Optional[byt
         logger.exception(f"[BG] Unexpected error in background for id={task_id}")
         _safe_update_task(task_id, status='failed')
 
+# Thay đổi từ dòng 300:
 @app.post("/transcribe_base64")
 def transcribe_base64(payload: dict):
     """
@@ -438,16 +457,26 @@ def transcribe_base64(payload: dict):
     """
     try:
         audio_base64 = payload.get("audio_data")
-        sample_rate = payload.get("sample_rate", 16000)
+        sample_rate = payload.get("sample_rate", 16000)  # Sample rate gốc
         stream = payload.get("stream", False)
         mime_type = payload.get("mime_type", None)
         
         if not audio_base64:
             return {"success": False, "error": "No audio data provided", "text": ""}
         
-        # Use new transcribe_base64 method
+        # Sử dụng hàm transcribe mới với resample
         asr_client = get_asr_client()
-        result = asr_client.transcribe_base64(audio_base64, sample_rate, stream, mime_type)
+        
+        # Thêm logging để debug
+        logger.debug(f"Transcribing base64: sample_rate={sample_rate}, mime_type={mime_type}")
+        
+        # Sử dụng hàm mới với resample
+        result = asr_client.transcribe_base64_with_resample(
+            audio_base64=audio_base64,
+            original_sample_rate=sample_rate,
+            target_sample_rate=16000,  # Luôn chuyển về 16000Hz
+            mime_type=mime_type
+        )
         
         # Handle empty/silent audio gracefully
         if not result.get("success"):
@@ -457,8 +486,7 @@ def transcribe_base64(payload: dict):
         
     except Exception as e:
         logger.exception(f"Base64 transcription failed: {e}")
-        return {"success": False, "error": str(e), "text": ""}
-    
+        return {"success": False, "error": str(e), "text": ""} 
     
 @app.post("/transcribe")
 def transcribe_audio(file: UploadFile = File(...), stream: bool = Form(False)):
@@ -564,6 +592,95 @@ def ask(req: AskRequest):
 
     # return quick text + task id immediately
     return {"id": task_id, "text": quick_text}
+
+class AudioRequest(BaseModel):
+    audio_base64: str
+    sample_rate: int = 48000  # Sample rate gốc từ microphone
+    mime_type: str = "audio/webm"
+
+@app.post("/ask_with_audio")
+def ask_with_audio(req: AudioRequest):
+    """
+    Nhận audio từ microphone, transcribe, sau đó xử lý như /ask
+    """
+    try:
+        logger.debug(f"/ask_with_audio received audio: sample_rate={req.sample_rate}, mime_type={req.mime_type}")
+        
+        # 1. Transcribe audio với resample
+        asr_client = get_asr_client()
+        transcription = asr_client.transcribe_base64_with_resample(
+            audio_base64=req.audio_base64,
+            original_sample_rate=req.sample_rate,
+            target_sample_rate=16000,
+            mime_type=req.mime_type
+        )
+        
+        if not transcription.get('success'):
+            logger.error(f"Transcription failed: {transcription.get('error')}")
+            raise HTTPException(status_code=400, detail=f"Transcription failed: {transcription.get('error')}")
+        
+        question = transcription.get('text', '').strip()
+        
+        if not question:
+            logger.warning("No speech detected in audio")
+            return {
+                "id": "no_speech",
+                "text": "Không nhận được lời nói nào từ bạn. Vui lòng thử lại.",
+                "audio_url": None
+            }
+        
+        logger.debug(f"Transcribed question: {question}")
+        
+        # 2. Tạo task như /ask thông thường
+        task_id = uuid.uuid4().hex[:12]
+        logger.debug(f"/ask_with_audio assigned id={task_id}")
+        
+        # Synchronously get quick text
+        try:
+            quick_text = get_quick_response_llm(question)
+            logger.debug(f"Quick response length={len(quick_text) if quick_text else 0}")
+        except Exception:
+            logger.exception("Quick LLM failed")
+            quick_text = None
+        
+        # Initialize task record
+        now = time.time()
+        with tasks_lock:
+            tasks[task_id] = {
+                'id': task_id,
+                'question': question,
+                'created': now,
+                'status': 'quick_ready' if quick_text else 'pending',
+                'quick_text': quick_text,
+                'quick_audio_url': None,
+                'full_text': None,
+                'full_audio_urls': [],
+                'source': 'audio_input',
+                'original_sample_rate': req.sample_rate
+            }
+        
+        trace_event(task_id, 'start_with_audio', {
+            'sample_rate': req.sample_rate,
+            'mime_type': req.mime_type,
+            'transcribed_question': question
+        })
+        
+        if quick_text:
+            trace_event(task_id, 'quick_text_ready', {'quick_text': quick_text})
+        
+        # Spawn background worker
+        executor.submit(_background_process_all, task_id, question)
+        
+        return {
+            "id": task_id,
+            "text": quick_text,
+            "transcribed_question": question,
+            "transcription_success": True
+        }
+        
+    except Exception as e:
+        logger.exception(f"Error in /ask_with_audio: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 LOG_RETRIEVAL_FILE = os.path.join('/tmp/logs' if os.environ.get("VERCEL") else 'logs', 'retrieval.log')
 
