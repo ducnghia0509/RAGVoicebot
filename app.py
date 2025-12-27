@@ -8,6 +8,7 @@ from typing import List
 import threading
 import re
 import json
+import asyncio
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
@@ -451,9 +452,10 @@ def _background_process_all(task_id: str, question: str, audio_data: Optional[by
 
 # Thay đổi từ dòng 300:
 @app.post("/transcribe_base64")
-def transcribe_base64(payload: dict):
+async def transcribe_base64(payload: dict):
     """
     Transcribe audio from base64 encoded string
+    Enhanced error handling for Railway deployment
     """
     try:
         audio_base64 = payload.get("audio_data")
@@ -462,31 +464,75 @@ def transcribe_base64(payload: dict):
         mime_type = payload.get("mime_type", None)
         
         if not audio_base64:
-            return {"success": False, "error": "No audio data provided", "text": ""}
+            logger.warning("No audio data provided in request")
+            return JSONResponse(
+                status_code=200,
+                content={"success": False, "error": "No audio data provided", "text": ""}
+            )
         
-        # Sử dụng hàm transcribe mới với resample
-        asr_client = get_asr_client()
+        # Log request info
+        logger.info(f"Transcribing base64: sample_rate={sample_rate}, mime_type={mime_type}, data_length={len(audio_base64)}")
         
-        # Thêm logging để debug
-        logger.debug(f"Transcribing base64: sample_rate={sample_rate}, mime_type={mime_type}")
+        # Get ASR client
+        try:
+            asr_client = get_asr_client()
+        except Exception as e:
+            logger.error(f"Failed to initialize ASR client: {e}")
+            return JSONResponse(
+                status_code=200,
+                content={"success": False, "error": "ASR service unavailable", "text": ""}
+            )
         
-        # Sử dụng hàm mới với resample
-        result = asr_client.transcribe_base64_with_resample(
-            audio_base64=audio_base64,
-            original_sample_rate=sample_rate,
-            target_sample_rate=16000,  # Luôn chuyển về 16000Hz
-            mime_type=mime_type
-        )
+        # Transcribe với timeout protection
+        import asyncio
+        from concurrent.futures import TimeoutError as FuturesTimeoutError
         
-        # Handle empty/silent audio gracefully
-        if not result.get("success"):
-            logger.warning(f"Transcription unsuccessful: {result.get('error', 'Unknown error')}")
-        
-        return result
+        try:
+            # Run trong executor với timeout 30s
+            loop = asyncio.get_event_loop()
+            result = await asyncio.wait_for(
+                loop.run_in_executor(
+                    None,
+                    lambda: asr_client.transcribe_base64_with_resample(
+                        audio_base64=audio_base64,
+                        original_sample_rate=sample_rate,
+                        target_sample_rate=16000,
+                        mime_type=mime_type
+                    )
+                ),
+                timeout=30.0  # 30 second timeout
+            )
+            
+            # Handle result
+            if not result.get("success"):
+                logger.warning(f"Transcription unsuccessful: {result.get('error', 'Unknown error')}")
+            else:
+                logger.info(f"Transcription successful: {result.get('text', '')[:100]}...")
+            
+            return JSONResponse(
+                status_code=200,
+                content=result
+            )
+            
+        except asyncio.TimeoutError:
+            logger.error("Transcription timeout after 30 seconds")
+            return JSONResponse(
+                status_code=200,
+                content={"success": False, "error": "Transcription timeout", "text": ""}
+            )
+        except Exception as e:
+            logger.exception(f"Transcription processing error: {e}")
+            return JSONResponse(
+                status_code=200,
+                content={"success": False, "error": f"Processing error: {str(e)}", "text": ""}
+            )
         
     except Exception as e:
-        logger.exception(f"Base64 transcription failed: {e}")
-        return {"success": False, "error": str(e), "text": ""} 
+        logger.exception(f"Base64 transcription endpoint error: {e}")
+        return JSONResponse(
+            status_code=200,
+            content={"success": False, "error": f"Server error: {str(e)}", "text": ""}
+        ) 
     
 @app.post("/transcribe")
 def transcribe_audio(file: UploadFile = File(...), stream: bool = Form(False)):

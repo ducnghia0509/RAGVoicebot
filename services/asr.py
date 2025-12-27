@@ -3,6 +3,8 @@ import queue
 import threading
 import logging
 import io
+import os
+import tempfile
 import base64
 import soundfile as sf
 import numpy as np
