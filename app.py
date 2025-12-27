@@ -1,5 +1,5 @@
-# from rebuild_json_env import setup_gcp_credentials_from_env
-# setup_gcp_credentials_from_env()
+from rebuild_json_env import setup_gcp_credentials_from_env
+setup_gcp_credentials_from_env()
 import os
 import time
 import uuid

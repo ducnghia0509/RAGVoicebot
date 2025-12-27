@@ -25,6 +25,7 @@
       .file-upload-section {
         flex: 0 0 280px;
         min-width: 280px;
+        display: none;
       }
       
       /* Mobile: stack vertically */
@@ -35,6 +36,16 @@
         .file-upload-section {
           flex: 1;
         }
+      }
+      
+      /* Thêm style cho queue info */
+      .queue-info {
+        background: #f0f8ff;
+        padding: 10px;
+        border-radius: 5px;
+        margin: 10px 0;
+        font-size: 12px;
+        border-left: 3px solid #2196F3;
       }
     </style>
   </head>
@@ -65,6 +76,12 @@
         <!-- Thêm thông tin về sample rate -->
         <div id="sampleRateInfo" style="font-size: 12px; color: #666; margin-top: 5px;">
           Sample rate: <span id="currentSampleRate">-</span> Hz
+        </div>
+        
+        <!-- Hiển thị queue info -->
+        <div id="queueInfo" class="queue-info" style="display: none;">
+          <strong>Audio Queue:</strong>
+          <div id="queueStatus">Idle</div>
         </div>
       </div>
 
@@ -97,6 +114,8 @@
     const audioVisualizer = document.getElementById('audioVisualizer');
     const recordedAudio = document.getElementById('recordedAudio');
     const currentSampleRate = document.getElementById('currentSampleRate');
+    const queueInfo = document.getElementById('queueInfo');
+    const queueStatus = document.getElementById('queueStatus');
 
     // Setup audio visualizer
     function setupVisualizer() {
@@ -120,7 +139,7 @@
                 audio: {
                     echoCancellation: true,
                     noiseSuppression: true,
-                    sampleRate: 16000 // Yêu cầu sample rate thấp hơn ngay từ đầu
+                    autoGainControl: true
                 }
             });
             
@@ -145,8 +164,7 @@
             
             // Setup media recorder với cấu hình chất lượng thấp hơn
             const options = {
-                mimeType: 'audio/webm;codecs=opus',
-                audioBitsPerSecond: 16000 // Bitrate thấp hơn
+                mimeType: 'audio/webm;codecs=opus'
             };
             
             try {
@@ -157,6 +175,7 @@
             }
             
             audioChunks = [];
+            let recordingStartTime = Date.now();
             
             mediaRecorder.ondataavailable = (event) => {
                 if (event.data.size > 0) {
@@ -171,7 +190,7 @@
                 recordedAudio.src = audioUrl;
                 
                 // Chuyển đổi sample rate và transcribe
-                await resampleAndTranscribe(audioBlob, actualSampleRate, 16000);
+                await resampleAndProcess(audioBlob, actualSampleRate, 16000);
                 
                 // Cleanup
                 stream.getTracks().forEach(track => track.stop());
@@ -193,38 +212,16 @@
         }
     }
 
-    // Hàm resample audio từ sample rate cao xuống 16000
-    async function resampleAndTranscribe(audioBlob, originalSampleRate, targetSampleRate = 16000) {
+    // Hàm resample audio từ sample rate cao xuống 16000 và xử lý
+    async function resampleAndProcess(audioBlob, originalSampleRate, targetSampleRate = 16000) {
         try {
             recordingStatus.textContent = '⏳ Resampling audio...';
+            console.log(`Resampling from ${originalSampleRate}Hz to ${targetSampleRate}Hz`);
             
-            // Tạo AudioContext mới để xử lý resample
-            const offlineContext = new OfflineAudioContext(
-                1, // Mono
-                Math.ceil(audioBlob.size * targetSampleRate / originalSampleRate),
-                targetSampleRate
-            );
+            // Sử dụng hàm resample audio cải tiến
+            const resampledBlob = await resampleAudio(audioBlob, originalSampleRate, targetSampleRate);
             
-            // Tạo AudioBuffer từ blob
-            const arrayBuffer = await audioBlob.arrayBuffer();
-            const audioBuffer = await offlineContext.decodeAudioData(arrayBuffer);
-            
-            // Tạo source từ buffer
-            const source = offlineContext.createBufferSource();
-            source.buffer = audioBuffer;
-            source.connect(offlineContext.destination);
-            source.start(0);
-            
-            // Render audio với sample rate mới
-            const resampledBuffer = await offlineContext.startRendering();
-            
-            // Chuyển AudioBuffer thành WAV bytes
-            const wavBytes = audioBufferToWav(resampledBuffer, targetSampleRate);
-            
-            // Tạo blob mới với sample rate đã chuyển đổi
-            const resampledBlob = new Blob([wavBytes], { type: 'audio/wav' });
-            
-            console.log(`Resampled audio from ${originalSampleRate}Hz to ${targetSampleRate}Hz`);
+            console.log(`Successfully resampled to ${targetSampleRate}Hz`);
             currentSampleRate.textContent = `${originalSampleRate} → ${targetSampleRate} Hz`;
             
             // Gửi audio đã resample để transcribe
@@ -234,17 +231,61 @@
             console.error('Error resampling audio:', error);
             // Fallback: gửi audio gốc nếu resample thất bại
             recordingStatus.textContent = '⏳ Transcribing (original sample rate)...';
+            currentSampleRate.textContent = `${originalSampleRate} Hz (no resample)`;
             await transcribeAudio(audioBlob, originalSampleRate);
         }
     }
 
-    // Hàm chuyển AudioBuffer thành WAV bytes
+    // Hàm resample audio cải tiến
+    async function resampleAudio(audioBlob, originalSampleRate, targetSampleRate) {
+        try {
+            // Tạo AudioContext tạm để decode audio
+            const tempContext = new (window.AudioContext || window.webkitAudioContext)();
+            
+            // Tạo ArrayBuffer từ blob
+            const arrayBuffer = await audioBlob.arrayBuffer();
+            
+            // Decode audio data
+            const audioBuffer = await tempContext.decodeAudioData(arrayBuffer);
+            
+            // Đóng context tạm
+            await tempContext.close();
+            
+            // Tạo OfflineAudioContext với sample rate mục tiêu
+            const offlineContext = new OfflineAudioContext(
+                audioBuffer.numberOfChannels,
+                Math.ceil(audioBuffer.length * targetSampleRate / audioBuffer.sampleRate),
+                targetSampleRate
+            );
+            
+            // Tạo source và kết nối
+            const source = offlineContext.createBufferSource();
+            source.buffer = audioBuffer;
+            source.connect(offlineContext.destination);
+            source.start(0);
+            
+            // Render audio với sample rate mới
+            const resampledBuffer = await offlineContext.startRendering();
+            
+            // Chuyển thành WAV bytes
+            const wavBytes = audioBufferToWav(resampledBuffer, targetSampleRate);
+            
+            // Tạo blob WAV mới
+            return new Blob([wavBytes], { type: 'audio/wav' });
+            
+        } catch (error) {
+            console.error('Resample failed:', error);
+            throw error;
+        }
+    }
+
+    // Hàm chuyển AudioBuffer thành WAV bytes (phiên bản cải tiến)
     function audioBufferToWav(buffer, sampleRate) {
         const numChannels = buffer.numberOfChannels;
         const length = buffer.length * numChannels * 2;
         const data = new DataView(new ArrayBuffer(44 + length));
         
-        // Write WAV header
+        // WAV header
         writeString(data, 0, 'RIFF');
         data.setUint32(4, 36 + length, true);
         writeString(data, 8, 'WAVE');
@@ -261,9 +302,17 @@
         
         // Write PCM data
         let offset = 44;
+        
+        // Lấy data từ tất cả channels
+        const channelData = [];
+        for (let channel = 0; channel < numChannels; channel++) {
+            channelData.push(buffer.getChannelData(channel));
+        }
+        
+        // Interleave channels
         for (let i = 0; i < buffer.length; i++) {
             for (let channel = 0; channel < numChannels; channel++) {
-                const sample = Math.max(-1, Math.min(1, buffer.getChannelData(channel)[i]));
+                const sample = Math.max(-1, Math.min(1, channelData[channel][i]));
                 data.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true);
                 offset += 2;
             }
@@ -314,6 +363,7 @@
             x += barWidth + 1;
         }
     }
+
     function blobToBase64(blob) {
       return new Promise((resolve, reject) => {
           const reader = new FileReader();
@@ -322,7 +372,6 @@
           reader.readAsDataURL(blob);
       });
     }
-
 
     // Xử lý file wav được chọn hoặc thả vào
     async function handleWavFile(file) {
@@ -335,11 +384,17 @@
             // Hiển thị file lên audio player
             const url = URL.createObjectURL(file);
             recordedAudio.src = url;
+            
             // Gửi file lên /transcribe để lấy text
             const formData = new FormData();
             formData.append('file', file);
             formData.append('stream', 'false');
-            const resp = await fetch('/transcribe', { method: 'POST', body: formData });
+            
+            const resp = await fetch('/transcribe', { 
+                method: 'POST', 
+                body: formData 
+            });
+            
             const result = await resp.json();
             if (result.success && result.text) {
                 wavStatus.textContent = `✅ "${result.text.substring(0, 30)}..."`;
@@ -358,7 +413,6 @@
         }
     }
 
-
     // Transcribe audio to text (đã resample)
     async function transcribeAudio(audioBlob, sampleRate = 16000) {
         try {
@@ -367,7 +421,7 @@
             // Convert to base64
             const base64Audio = await blobToBase64(audioBlob);
             
-            // Use new endpoint với sample rate đã resample
+            // Use endpoint /transcribe_base64 với sample rate đã resample
             const response = await fetch('/transcribe_base64', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -375,26 +429,32 @@
                     audio_data: base64Audio.split(',')[1],
                     sample_rate: sampleRate, // Sử dụng sample rate đã resample
                     stream: false,
-                    mime_type: audioBlob.type
+                    mime_type: audioBlob.type || 'audio/wav'
                 })
             });
             
             const result = await response.json();
+            
             if (result.success && result.text) {
-                recordingStatus.textContent = `✅ Transcribed: ${result.text.substring(0, 50)}...`;
-                // Gửi tiếp text này để nhận audio phản hồi
-                await sendTextForVoiceResponse(result.text);
+                const transcribedText = result.text.trim();
+                if (transcribedText) {
+                    recordingStatus.textContent = `✅ Transcribed: ${transcribedText.substring(0, 50)}...`;
+                    // Gửi tiếp text này để nhận audio phản hồi
+                    await sendTextForVoiceResponse(transcribedText);
+                } else {
+                    recordingStatus.textContent = '⚠️ Không nhận được lời nói (audio silent)';
+                }
             } else {
                 let msg = '❌ Transcription failed';
-                if (!result.text || (typeof result.text === 'string' && result.text.trim() === '')) {
-                    msg = 'Không nhận được lời nói nào từ người dùng, có lẽ họ chưa nói gì, hoặc mic có vấn đề';
+                if (result.error) {
+                    msg += `: ${result.error}`;
                 }
                 recordingStatus.textContent = msg;
                 console.error('Transcription error:', result.error);
             }
         } catch (error) {
             console.error('Transcription error:', error);
-            recordingStatus.textContent = '❌ Transcription error';
+            recordingStatus.textContent = '❌ Transcription error: ' + error.message;
         }
     }
 
@@ -402,6 +462,7 @@
       try {
           recordingStatus.textContent = '🎵 Generating voice response...';
           
+          // Sử dụng endpoint /ask để gửi text và nhận response
           const response = await fetch('/ask', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
@@ -411,233 +472,252 @@
           const result = await response.json();
           if (result.id && result.text) {
               recordingStatus.textContent = '🎵 Voice response ready!';
-              // Bạn có thể tự động play audio response ở đây
               console.log('Voice response ID:', result.id, 'Text:', result.text);
-                  // Bắt đầu polling trạng thái để lấy và phát audio
-                  pollAndPlayAudio(result.id);
+              
+              // Hiển thị queue info
+              queueInfo.style.display = 'block';
+              
+              // Bắt đầu polling trạng thái để lấy và phát audio
+              pollAndPlayAudio(result.id);
+          } else {
+              recordingStatus.textContent = '❌ No response received';
           }
       } catch (error) {
           console.error('Voice response error:', error);
-          recordingStatus.textContent = '❌ Voice response failed';
+          recordingStatus.textContent = '❌ Voice response failed: ' + error.message;
       }
     }
 
+    // Hàm tự động polling trạng thái và phát audio khi có
+    let audioQueue = {
+        items: [],
+        isPlaying: false,
+        currentTaskId: null
+    };
 
-        // Hàm tự động polling trạng thái và phát audio khi có
-        let lastPlayedQuick = null;
-        let lastPlayedFull = [];
-
-
-        // Biến global để quản lý
-        let audioQueue = {
-            items: [],
-            isPlaying: false,
-            currentTaskId: null
-        };
-
-        // Hàm cải tiến pollAndPlayAudio
-        async function pollAndPlayAudio(taskId) {
-            audioQueue.currentTaskId = taskId;
-            let taskCompleted = false;
-            let quickAudioAdded = false;
-            
-            // Polling cho đến khi task hoàn thành
-            while (!taskCompleted) {
-                try {
-                    const resp = await fetch(`/status/${taskId}`);
-                    const status = await resp.json();
-                    
-                    // Thêm quick audio nếu có (ưu tiên cao)
-                    if (status.quick_audio_url && !quickAudioAdded) {
-                        addToAudioQueue({
-                            url: status.quick_audio_url,
-                            type: 'quick',
-                            priority: 10, // Highest priority
-                            taskId: taskId
-                        });
-                        quickAudioAdded = true;
-                    }
-                    
-                    // Thêm full audio parts
-                    if (Array.isArray(status.full_audio_urls)) {
-                        status.full_audio_urls.forEach((url, index) => {
-                            if (!isAudioInQueue(url)) {
-                                addToAudioQueue({
-                                    url: url,
-                                    type: 'full',
-                                    priority: 5 - index, // Earlier parts get higher priority
-                                    taskId: taskId
-                                });
-                            }
-                        });
-                    }
-                    
-                    // Kiểm tra nếu có merged audio (sẽ thay thế các parts)
-                    if (status.full_merged_url) {
-                        // Clear queue for this task and add merged audio
-                        clearQueueForTask(taskId);
-                        addToAudioQueue({
-                            url: status.full_merged_url,
-                            type: 'merged',
-                            priority: 8, // Higher than full parts
-                            taskId: taskId
-                        });
-                    }
-                    
-                    // Tự động bắt đầu phát nếu chưa phát
-                    if (!audioQueue.isPlaying && audioQueue.items.length > 0) {
-                        playNextInQueue();
-                    }
-                    
-                    // Kiểm tra nếu task đã hoàn thành
-                    if (status.status === 'full_ready' || status.full_merged_url) {
-                        // Đợi queue của task này phát xong
-                        const hasUnplayed = audioQueue.items.some(item => 
-                            item.taskId === taskId && !item.played
-                        );
-                        
-                        if (!hasUnplayed) {
-                            taskCompleted = true;
-                            recordingStatus.textContent = '✅ Finished!';
-                            // Clean up old audio files
-                            cleanupOldAudio();
-                            break;
+    // Hàm cải tiến pollAndPlayAudio
+    async function pollAndPlayAudio(taskId) {
+        audioQueue.currentTaskId = taskId;
+        let taskCompleted = false;
+        let quickAudioAdded = false;
+        
+        // Hiển thị queue status
+        updateQueueStatus('Waiting for audio...');
+        
+        // Polling cho đến khi task hoàn thành
+        while (!taskCompleted) {
+            try {
+                const resp = await fetch(`/status/${taskId}`);
+                const status = await resp.json();
+                
+                // Thêm quick audio nếu có (ưu tiên cao)
+                if (status.quick_audio_url && !quickAudioAdded) {
+                    addToAudioQueue({
+                        url: status.quick_audio_url,
+                        type: 'quick',
+                        priority: 10, // Highest priority
+                        taskId: taskId
+                    });
+                    quickAudioAdded = true;
+                    updateQueueStatus('Quick audio queued');
+                }
+                
+                // Thêm full audio parts
+                if (Array.isArray(status.full_audio_urls)) {
+                    status.full_audio_urls.forEach((url, index) => {
+                        if (!isAudioInQueue(url)) {
+                            addToAudioQueue({
+                                url: url,
+                                type: 'full',
+                                priority: 5 - index, // Earlier parts get higher priority
+                                taskId: taskId
+                            });
                         }
+                    });
+                }
+                
+                // Kiểm tra nếu có merged audio (sẽ thay thế các parts)
+                if (status.full_merged_url) {
+                    // Clear queue for this task and add merged audio
+                    clearQueueForTask(taskId);
+                    addToAudioQueue({
+                        url: status.full_merged_url,
+                        type: 'merged',
+                        priority: 8, // Higher than full parts
+                        taskId: taskId
+                    });
+                }
+                
+                // Tự động bắt đầu phát nếu chưa phát
+                if (!audioQueue.isPlaying && audioQueue.items.length > 0) {
+                    playNextInQueue();
+                }
+                
+                // Kiểm tra nếu task đã hoàn thành
+                if (status.status === 'full_ready' || status.full_merged_url) {
+                    // Đợi queue của task này phát xong
+                    const hasUnplayed = audioQueue.items.some(item => 
+                        item.taskId === taskId && !item.played
+                    );
+                    
+                    if (!hasUnplayed) {
+                        taskCompleted = true;
+                        recordingStatus.textContent = '✅ Finished!';
+                        updateQueueStatus('Completed');
+                        
+                        // Clean up old audio files
+                        await cleanupOldAudio();
+                        break;
                     }
-                    
-                    // Hiển thị thông tin queue
-                    updateQueueDisplay();
-                    
-                } catch (e) {
-                    console.error('Polling error:', e);
-                    // Nếu lỗi nhiều lần, thử lại sau
-                    await new Promise(r => setTimeout(r, 2000));
                 }
                 
-                // Poll interval
-                await new Promise(r => setTimeout(r, 1000));
-            }
-        }
-
-        function addToAudioQueue(item) {
-            // Kiểm tra trùng lặp
-            if (isAudioInQueue(item.url)) return;
-            
-            item.addedAt = Date.now();
-            item.played = false;
-            
-            audioQueue.items.push(item);
-            
-            // Sắp xếp: priority cao trước, rồi đến thời gian thêm
-            audioQueue.items.sort((a, b) => {
-                if (b.priority !== a.priority) {
-                    return b.priority - a.priority;
-                }
-                return a.addedAt - b.addedAt;
-            });
-            
-            console.log(`Audio queued: ${item.url} (priority: ${item.priority})`);
-        }
-
-        function isAudioInQueue(url) {
-            return audioQueue.items.some(item => item.url === url);
-        }
-
-        function clearQueueForTask(taskId) {
-            audioQueue.items = audioQueue.items.filter(item => item.taskId !== taskId);
-        }
-
-        async function playNextInQueue() {
-            if (audioQueue.isPlaying || audioQueue.items.length === 0) return;
-            
-            // Tìm item chưa phát đầu tiên
-            const nextItem = audioQueue.items.find(item => !item.played);
-            if (!nextItem) return;
-            
-            audioQueue.isPlaying = true;
-            nextItem.played = true;
-            nextItem.startedAt = Date.now();
-            
-            try {
-                recordingStatus.textContent = `🔊 Playing ${nextItem.type} response...`;
+                // Hiển thị thông tin queue
+                updateQueueDisplay();
                 
-                // Phát audio
-                await playAudioUrl(nextItem.url);
-                
-                nextItem.endedAt = Date.now();
-                nextItem.duration = nextItem.endedAt - nextItem.startedAt;
-                
-                console.log(`Played: ${nextItem.url} (${Math.round(nextItem.duration/1000)}s)`);
-                
-            } catch (error) {
-                console.error('Playback failed:', error);
-                // Mark as played để không bị kẹt
-                nextItem.endedAt = Date.now();
-                nextItem.error = true;
-            }
-            
-            audioQueue.isPlaying = false;
-            
-            // Tự động phát tiếp nếu còn
-            if (audioQueue.items.some(item => !item.played)) {
-                setTimeout(playNextInQueue, 100); // Small delay
-            } else {
-                recordingStatus.textContent = 'Queue empty';
-            }
-            
-            updateQueueDisplay();
-        }
-
-        function updateQueueDisplay() {
-            const waiting = audioQueue.items.filter(item => !item.played).length;
-            const playing = audioQueue.isPlaying ? 1 : 0;
-            
-            // Có thể hiển thị ở đâu đó trên UI
-            console.log(`Queue: ${playing} playing, ${waiting} waiting`);
-            
-            // Hoặc hiển thị trong một div
-            const queueInfo = document.getElementById('queueInfo');
-            if (queueInfo) {
-                queueInfo.innerHTML = `
-                    <div>Playing: ${playing}</div>
-                    <div>Waiting: ${waiting}</div>
-                    <div>Total: ${audioQueue.items.length}</div>
-                `;
-            }
-        }
-
-        // Cleanup old audio files
-        async function cleanupOldAudio() {
-            try {
-                // Lấy danh sách các file cũ để xóa
-                const response = await fetch('/cleanup_old_audio', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ olderThan: 300 }) // 5 phút
-                });
-                const result = await response.json();
-                console.log('Cleanup result:', result);
             } catch (e) {
-                console.error('Cleanup failed:', e);
+                console.error('Polling error:', e);
+                updateQueueStatus('Polling error, retrying...');
+                // Nếu lỗi nhiều lần, thử lại sau
+                await new Promise(r => setTimeout(r, 2000));
             }
+            
+            // Poll interval
+            await new Promise(r => setTimeout(r, 1000));
         }
+    }
 
+    function addToAudioQueue(item) {
+        // Kiểm tra trùng lặp
+        if (isAudioInQueue(item.url)) return;
+        
+        item.addedAt = Date.now();
+        item.played = false;
+        
+        audioQueue.items.push(item);
+        
+        // Sắp xếp: priority cao trước, rồi đến thời gian thêm
+        audioQueue.items.sort((a, b) => {
+            if (b.priority !== a.priority) {
+                return b.priority - a.priority;
+            }
+            return a.addedAt - b.addedAt;
+        });
+        
+        console.log(`Audio queued: ${item.url} (priority: ${item.priority})`);
+    }
 
+    function isAudioInQueue(url) {
+        return audioQueue.items.some(item => item.url === url);
+    }
 
-        // Hàm phát audio từ url, trả promise khi phát xong
-        function playAudioUrl(url) {
-            return new Promise((resolve) => {
-                recordedAudio.src = url;
-                recordedAudio.play();
-                recordedAudio.onended = () => {
-                    resolve();
-                };
-                recordedAudio.onerror = () => {
-                    resolve();
-                };
+    function clearQueueForTask(taskId) {
+        audioQueue.items = audioQueue.items.filter(item => item.taskId !== taskId);
+    }
+
+    async function playNextInQueue() {
+        if (audioQueue.isPlaying || audioQueue.items.length === 0) return;
+        
+        // Tìm item chưa phát đầu tiên
+        const nextItem = audioQueue.items.find(item => !item.played);
+        if (!nextItem) return;
+        
+        audioQueue.isPlaying = true;
+        nextItem.played = true;
+        nextItem.startedAt = Date.now();
+        
+        try {
+            recordingStatus.textContent = `🔊 Playing ${nextItem.type} response...`;
+            updateQueueStatus(`Playing ${nextItem.type} audio...`);
+            
+            // Phát audio
+            await playAudioUrl(nextItem.url);
+            
+            nextItem.endedAt = Date.now();
+            nextItem.duration = nextItem.endedAt - nextItem.startedAt;
+            
+            console.log(`Played: ${nextItem.url} (${Math.round(nextItem.duration/1000)}s)`);
+            
+        } catch (error) {
+            console.error('Playback failed:', error);
+            // Mark as played để không bị kẹt
+            nextItem.endedAt = Date.now();
+            nextItem.error = true;
+            updateQueueStatus('Playback error');
+        }
+        
+        audioQueue.isPlaying = false;
+        
+        // Tự động phát tiếp nếu còn
+        if (audioQueue.items.some(item => !item.played)) {
+            setTimeout(playNextInQueue, 100); // Small delay
+        } else {
+            updateQueueStatus('Queue empty');
+        }
+        
+        updateQueueDisplay();
+    }
+
+    function updateQueueDisplay() {
+        const waiting = audioQueue.items.filter(item => !item.played).length;
+        const playing = audioQueue.isPlaying ? 1 : 0;
+        const total = audioQueue.items.length;
+        
+        queueStatus.innerHTML = `
+            <div>Playing: ${playing}</div>
+            <div>Waiting: ${waiting}</div>
+            <div>Total: ${total}</div>
+        `;
+        
+        console.log(`Queue: ${playing} playing, ${waiting} waiting, ${total} total`);
+    }
+
+    function updateQueueStatus(message) {
+        queueStatus.innerHTML = `<div>${message}</div>`;
+    }
+
+    // Cleanup old audio files
+    async function cleanupOldAudio() {
+        try {
+            // Lấy danh sách các file cũ để xóa
+            const response = await fetch('/cleanup_old_audio', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ olderThan: 300 }) // 5 phút
             });
+            const result = await response.json();
+            console.log('Cleanup result:', result);
+        } catch (e) {
+            console.error('Cleanup failed:', e);
         }
+    }
 
+    // Hàm phát audio từ url, trả promise khi phát xong
+    function playAudioUrl(url) {
+        return new Promise((resolve) => {
+            recordedAudio.src = url;
+            recordedAudio.play().then(() => {
+                console.log('Audio playback started:', url);
+            }).catch(error => {
+                console.error('Audio playback failed:', error);
+                resolve(); // Vẫn resolve để tiếp tục queue
+            });
+            
+            recordedAudio.onended = () => {
+                console.log('Audio playback ended:', url);
+                resolve();
+            };
+            
+            recordedAudio.onerror = () => {
+                console.error('Audio playback error:', url);
+                resolve();
+            };
+            
+            // Timeout để tránh treo nếu audio không play
+            setTimeout(() => {
+                resolve();
+            }, 30000); // 30 seconds timeout
+        });
+    }
 
     // Event listeners
     recordBtn.addEventListener('click', startRecording);
@@ -647,20 +727,24 @@
     const wavInput = document.getElementById('wavInput');
     const wavDropZone = document.getElementById('wavDropZone');
     const wavStatus = document.getElementById('wavStatus');
+    
     wavInput.addEventListener('change', (e) => {
         if (e.target.files && e.target.files[0]) {
             handleWavFile(e.target.files[0]);
         }
     });
+    
     // Drag & drop
     wavDropZone.addEventListener('dragover', (e) => {
         e.preventDefault();
         wavDropZone.style.background = '#e0ffe0';
     });
+    
     wavDropZone.addEventListener('dragleave', (e) => {
         e.preventDefault();
         wavDropZone.style.background = '#f6fff6';
     });
+    
     wavDropZone.addEventListener('drop', (e) => {
         e.preventDefault();
         wavDropZone.style.background = '#f6fff6';
@@ -668,6 +752,7 @@
             handleWavFile(e.dataTransfer.files[0]);
         }
     });
+    
     wavDropZone.addEventListener('click', () => {
         wavInput.click();
     });
@@ -678,9 +763,16 @@
             const recordingTime = audioChunks.length; // approx seconds
             if (recordingTime >= 30) {
                 stopRecording();
+                recordingStatus.textContent = '⏰ Auto-stopped after 30 seconds';
             }
         }
     }, 1000);
+
+    // Log browser support
+    console.log('Browser audio support check:');
+    console.log('- MediaRecorder supported:', typeof MediaRecorder !== 'undefined');
+    console.log('- AudioContext supported:', typeof (window.AudioContext || window.webkitAudioContext) !== 'undefined');
+    console.log('- OfflineAudioContext supported:', typeof (window.OfflineAudioContext || window.webkitOfflineAudioContext) !== 'undefined');
 </script>
   </body>
 </html>
